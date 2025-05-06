@@ -49,6 +49,7 @@ class InputState:
     watchdog: bool = field(default=False, init=False)
 
 class RobotControlStatus(IntEnum):
+    ERROR = auto()
     UNINITIALIZED = auto()
     INITIALIZED = auto()
     IDLE = auto()
@@ -58,7 +59,6 @@ class RobotControlStatus(IntEnum):
     READY = auto()
     ACTIVE = auto()
     PAUSED = auto()
-    ERROR = auto()
 
 class RobotControlArbiter:
     def __init__(self, 
@@ -85,7 +85,7 @@ class RobotControlArbiter:
         """
         self._state = RobotControlStatus.UNINITIALIZED
         self._robot_mutex = threading.RLock()
-        self._telemetry_mutex = threading.Lock()
+        self._telemetry_mutex = threading.RLock()
 
         self._home_pose = None
 
@@ -110,7 +110,7 @@ class RobotControlArbiter:
         # Subscribe to relevant control topics
         self._tool_status = self._node.create_subscription(
             msg_type=ToolDataMsg,
-            topic="~/tool_data",
+            topic="/io_and_status_controller/tool_data",
             callback=self._update_tool_state,
             qos_profile=UR_QOS_PROFILE
         )
@@ -143,10 +143,12 @@ class RobotControlArbiter:
                 callback_group=MutuallyExclusiveCallbackGroup()
             )
 
-            self._user_input_debounce.cancel()
+            #self._user_input_debounce.cancel()
+            self._debounce_active = False
             self._has_debounce_been_run = False
             self._debounce_triggered = False
         else:
+            self._debounce_active = False
             self._user_input_debounce = None
             self._has_debounce_been_run = False
 
@@ -168,10 +170,7 @@ class RobotControlArbiter:
         Returns:
             bool: true if running, false otherwise
         """
-        if self._user_input_debounce is not None:
-            return not self._user_input_debounce.is_canceled()
-        else:
-            return False
+        return self._debounce_active
         
     @property
     def is_ready(self) -> bool:
@@ -434,8 +433,12 @@ class RobotControlArbiter:
 
     def _trip_debounce(self):
         with self._telemetry_mutex:
-            self._debounce_triggered = True
-            self._user_input_debounce.cancel()
+            if self._debounce_active:
+                self._debounce_triggered = True
+                self._has_debounce_been_run = True
+                self._debounce_active = False
+                self._node.get_logger().info(f"Debounce tripped -> {self.tool_engaged}")
+                #self._user_input_debounce.cancel()
 
     def load_experiment(self, exercise: Exercise) -> bool:
         with self._telemetry_mutex:
@@ -455,7 +458,7 @@ class RobotControlArbiter:
     def _start_experiment(self, exercise: Exercise) -> bool:
         with self._robot_mutex:
             self._robot.set_action_completion_callback(self._handle_trajectory_future)
-            self._robot.set_action_feedback_callback(self._experiment_feedback)
+            #self._robot.set_action_feedback_callback(self._experiment_feedback)
             self._robot.set_action_result_callback(self._robot_control_completion)
             
             goal = DynamicForceModePath.Goal(
@@ -590,18 +593,22 @@ class RobotControlArbiter:
     def _update_tool_state(self, msg: ToolDataMsg):
         previous_state = self._tool_state.is_engaged
         self._tool_state.is_on = msg.tool_output_voltage > 0.0 # Check if tool voltage is non-zero
-        self._tool_state.is_engaged = msg.analog_input3 > _ANALOG_ACTIVE_THRESHOLD # Check if our analog voltage is above the "active" threshold
+        self._tool_state.is_engaged = msg.analog_input2 > _ANALOG_ACTIVE_THRESHOLD # Check if our analog voltage is above the "active" threshold
         self._tool_state_watchdog.reset()
 
         if self._user_input_debounce is not None:
             # Manage debounce timer
             if previous_state != self._tool_state.is_engaged: 
+                # If a state change is detected, check if the debounce timer is running
                 if not self._debounce_timer_running: 
                     # Start debounce timer
+                    self._node.get_logger().info("Starting debounce")
                     self._user_input_debounce.reset()
-            elif self._debounce_timer_running:
-                # Cancel debounce timer if jitter occurs before timer is tripped
-                self._user_input_debounce.cancel()
+                    self._debounce_active = True
+                else:
+                    # Reset debounce timer if jitter occurs before timer is tripped
+                    self._node.get_logger().info(f"Jitter detected: {previous_state} -> {self._tool_state.is_engaged}")
+                    self._user_input_debounce.reset()
 
         if not self._tool_state.watchdog:
             self._tool_state.watchdog = True

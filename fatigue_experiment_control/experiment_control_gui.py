@@ -42,6 +42,7 @@ class ExperimentControlGui(URControlQtWindow):
         self._robot_manager = RobotControlArbiter(
             node=node,
             robot=self._robot, 
+            engagement_debounce=0.5,
             state_change_callback=self._refresh_ui,
             watchdog_input_device_change_callback=partial(self._update_watchdog, self._input_device_watchdog),
             watchdog_tool_change_callback=partial(self._update_watchdog, self._tool_watchdog))
