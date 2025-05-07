@@ -314,7 +314,8 @@ class RobotControlArbiter:
             bool: true if able to successfully start freedrive, false otherwise
         """
         with self._robot_mutex:
-            if self._state != RobotControlStatus.IDLE and self._robot.current_mode != RobotMode.RUNNING:
+            if self._state != RobotControlStatus.IDLE or not self._robot.program_running:
+                self._node.get_logger().error(f"Invalid internal state: {self._state.name} or program is not running")
                 return False
             
             if result := self._robot.call_service(
@@ -323,9 +324,20 @@ class RobotControlArbiter:
             ): 
                 if result.success:
                     self._robot.run_freedrive_control()
+                    self._change_state(RobotControlStatus.PLANNING)
+                    return True
+                else:
+                    self._node.get_logger().error(f"Failed result: {result}")
+                    return False
             else:
                 return False
             
+    def exit_planning(self):
+        with self._robot_mutex:
+            self._robot.disable_freedrive()
+            self._robot.stop_freedrive_control()
+            self._change_state(RobotControlStatus.IDLE)
+
     def move_to_home(self, home: list[list[float]]):
         self._home_pose = home
         self._move_to(self._home_pose)
@@ -549,12 +561,14 @@ class RobotControlArbiter:
                     if self.tool_engaged:
                         self._change_state(RobotControlStatus.IDLE)
                 case RobotControlStatus.PLANNING:
-                    if self.tool_engaged:
-                        # Ping freedrive if the tool is engaged
-                        self._robot.ping_freedrive()
-                    else:
-                        # Disable freedrive if the tool is disengaged
-                        self._robot.disable_freedrive()
+                    self._robot.ping_freedrive()
+                    # if self.tool_engaged:
+                    #     # Ping freedrive if the tool is engaged
+                    #     self._robot.ping_freedrive()
+                    # else:
+                    #     # Disable freedrive if the tool is disengaged
+                    #     self._robot.disable_freedrive()
+                    #     self._change_state(RobotControlStatus.IDLE)
                 case RobotControlStatus.READY:
                     if self.is_ready and self.tool_engaged and self._pending_exercise is None:
                         # Attempt to start the experiment

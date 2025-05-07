@@ -1,5 +1,6 @@
 import threading
 import sys
+import numpy as np
 import rclpy
 
 from rclpy.node import Node
@@ -17,6 +18,7 @@ from idl_definitions.msg import (
 
 from python_utils.ros2_utils.visualization.qt_integration import RclpySpinner
 from python_utils.ros2_utils.comms.node_manager import get_realtime_qos_profile
+from python_utils.utils.datetime_utils import postfix_string_with_current_time
 
 from ur_msgs.srv import SetFreedriveParams
 
@@ -27,8 +29,23 @@ from functools import partial
 
 _DISTANCE_THRESHOLD = 30/1000
 _USE_ROBOT = True
-_LHS_JOINT_ANGLES = []
-_RHS_JOINT_ANGLES = []
+_LHS_JOINT_ANGLES = np.radians([
+    -58.93,
+    118.38,
+    -149.50,
+    90.26,
+    33.66,
+    263.77
+]).tolist()
+
+_RHS_JOINT_ANGLES = np.radians([
+    -119.57,
+    -111.99,
+    -38.23,
+    -89.88,
+    143.33,
+    -93.60
+]).tolist()
 
 class ExperimentControlGui(URControlQtWindow):
     def __init__(self, node):
@@ -83,6 +100,7 @@ class ExperimentControlGui(URControlQtWindow):
             QPushButton("RESET ARM", self): self._robot_manager.reset_arm_pose,
             QPushButton("PLAN BICEP CURL", self): partial(self.__exercise_planning, ExerciseType.VERTICAL_BICEP_CURL),
             QPushButton("PLAN LATERAL RAISE", self): partial(self.__exercise_planning, ExerciseType.VERTICAL_LATERAL_RAISE),
+            QPushButton("STOP PLANNING", self): self.__stop_planning,
             QPushButton("LOAD EXERCISE", self): self.__load_exercise,
             QPushButton("PREVIEW EXERCISE", self): self.__preview_exercise,
             QPushButton("SET EXERCISE", self): self.__set_exercise,
@@ -145,13 +163,21 @@ class ExperimentControlGui(URControlQtWindow):
             layout.addWidget(button)
 
     def __exercise_planning(self, exercise_type: ExerciseType):
-        self._robot_manager.backdrive_robot(
+        if not self._robot_manager.backdrive_robot(
             SetFreedriveParams.Request(
                 type=SetFreedriveParams.Request.TYPE_STRING,
                 free_axes=self._exercise_manager.get_exercise_dofs(exercise_type),
                 feature_constant=SetFreedriveParams.Request.FEATURE_TOOL
             )
-        )
+        ):
+            self._node.get_logger().error("Failed to enter freedrive")
+            return
+        
+        self._exercise_manager.start_monitoring(name=postfix_string_with_current_time(exercise_type.name))
+
+    def __stop_planning(self):
+        self._exercise_manager.stop_monitoring()
+        self._robot_manager.exit_planning()
 
     def __preview_exercise(self):
         signal = threading.Event()
@@ -178,7 +204,7 @@ class ExperimentControlGui(URControlQtWindow):
         if fp and self._exercise_manager.load_exercise(fp):
             self._node.get_logger().info("Loaded exercise successfully")
         else:
-            self._node.get_logger().info("No input exercise selected")
+            self._node.get_logger().info("No input exercise selected or failed to load exercise")
 
     def __set_exercise(self):
         if exercise := self._exercise_manager.get_exercise():
@@ -188,13 +214,16 @@ class ExperimentControlGui(URControlQtWindow):
                 self._node.get_logger().error("Failed to start experiment")
 
     def __save_exercise(self):
-        if self._exercise_manager.get_exercise() is not None:
+        if exercise := self._exercise_manager.get_exercise():
+            pass
+        else:
             return
+        
         options = QFileDialog.Options()
         fp, _ = QFileDialog.getSaveFileName(
             self, 
             "Save exercise trajectory", 
-            "", 
+            f"{exercise.name.lower()}.exercise", 
             "Exercise file (*.exercise)", 
             options = options
         )

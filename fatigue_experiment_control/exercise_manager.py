@@ -67,19 +67,28 @@ class ExerciseManager:
         return exercise
     
     def save_exercise(self, fp: os.PathLike) -> bool:
-        if self._active_exercise is None or self._monitor_request:
+        if self._active_exercise is None:
+            self._node.get_logger().error("No active exercise")
             return False
         
-        self._active_exercise.name = os.path.basename(fp).split(".")[0]
+        if self._monitor_request:
+            self._node.get_logger().error("Monitoring active, cannot save exercise")
+            return False
+        
         with open(fp, "wb") as _pickled_file:
             pickle.dump(asdict(self._active_exercise), _pickled_file)
 
         return True
 
-    def load_exercise(self, fp: os.PathLike):
+    def load_exercise(self, path: os.PathLike):
         try:
-            self._active_exercise = pickle.load(fp)
-        except Exception:
+            with open(path, "rb") as fp:
+                self._active_exercise = Exercise(**pickle.load(fp))
+
+            self._node.get_logger().info(f"Loaded exercise {self._active_exercise.name}")
+            return True
+        except Exception as e:
+            self._node.get_logger().error(f"Error loading exercise: {e}")
             return False
 
     def start_monitoring(self, name: str, pose_decimation: int = 1, joint_decimation: int = 1):
@@ -103,6 +112,8 @@ class ExerciseManager:
         with self._lock:
             self._monitor_request = False
 
+        self._node.get_logger().info(f"Completed exercise {self._active_exercise.name} w/ N={len(self._active_exercise.poses)} poses / N = {len(self._active_exercise.joint_angles)} joint angles over {self._active_exercise.duration[-1].sec} sec")
+
     def add_pose(self, pose: PoseStamped):
         with self._lock:
             if self._active_exercise is not None and self._monitor_request:
@@ -116,6 +127,21 @@ class ExerciseManager:
                 self._joint_counter += 1
                 if self._joint_counter % self._joint_decimation == 0:
                     self._active_exercise.joint_angles.append(joints.position)
+
+                    # TODO(george): do this differently?
+                    #
+                    # Take relatively stamp difference as duration
+                    # t0 will be the time of the arrival of the first timestamp
+                    if len(self._active_exercise.duration) > 0:
+                        _delta_time_f64 = (joints.header.stamp.sec + joints.header.stamp.nanosec*1e-9) - \
+                        (self._active_exercise.duration[0].sec + self._active_exercise.duration[0].nanosec*1e-9)
+                        self._active_exercise.duration.append(
+                            Duration(sec = int(_delta_time_f64), nanosec = int((_delta_time_f64 - int(_delta_time_f64)) * 1e9))
+                        )
+                    else:
+                        self._active_exercise.duration.append(
+                            Duration(sec = joints.header.stamp.sec, nanosec = joints.header.stamp.nanosec)
+                        )
 
     def generate_path(self, poses: list[PoseStamped]) -> list[PoseStamped]:
         def __dist3d(_t1: PoseStamped, _t2: PoseStamped) -> float:
