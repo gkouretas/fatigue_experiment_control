@@ -37,7 +37,6 @@ _LHS_JOINT_ANGLES = np.radians([
     33.66,
     263.77
 ]).tolist()
-
 _RHS_JOINT_ANGLES = np.radians([
     -119.57,
     -111.99,
@@ -46,6 +45,7 @@ _RHS_JOINT_ANGLES = np.radians([
     143.33,
     -93.60
 ]).tolist()
+_USE_TOOL = False
 
 class ExperimentControlGui(URControlQtWindow):
     def __init__(self, node):
@@ -59,6 +59,7 @@ class ExperimentControlGui(URControlQtWindow):
         self._robot_manager = RobotControlArbiter(
             node=node,
             robot=self._robot, 
+            simulate_tool=not _USE_TOOL,
             engagement_debounce=0.5,
             state_change_callback=self._refresh_ui,
             watchdog_input_device_change_callback=partial(self._update_watchdog, self._input_device_watchdog),
@@ -190,6 +191,8 @@ class ExperimentControlGui(URControlQtWindow):
             _dialog.exec_()
 
             signal.clear()
+        else:
+            self._node.get_logger().error("Failed to preview exercise")
 
     def __load_exercise(self):
         options = QFileDialog.Options()
@@ -211,7 +214,7 @@ class ExperimentControlGui(URControlQtWindow):
             if not self._robot_manager.load_experiment(
                 exercise=exercise
             ):
-                self._node.get_logger().error("Failed to start experiment")
+                self._node.get_logger().error("Failed to set experiment")
 
     def __save_exercise(self):
         if exercise := self._exercise_manager.get_exercise():

@@ -32,6 +32,7 @@ _ANALOG_ACTIVE_THRESHOLD = 2.5
 _SPEED_LIMITS = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
 _CARTESIAN_DEVIATION_LIMIT = 1.0
 _ANGULAR_DEVIATION_LIMIT = 1.0
+_DEFAULT_TRAJECTORY_DURATION = 10
 
 @dataclass
 class ToolState:
@@ -64,6 +65,7 @@ class RobotControlArbiter:
     def __init__(self, 
                  node: Node, 
                  robot: URRobotSM, 
+                 simulate_tool: bool,
                  engagement_debounce: float | None = None, 
                  state_change_callback: Callable[[RobotControlStatus], None] = None,
                  deploy_feedback_callback: Callable[[FollowJointTrajectory.Feedback], None] = None,
@@ -76,12 +78,6 @@ class RobotControlArbiter:
         This node is responsible for being the middle-man for all UR related requests for fatigue experiments.
 
         It performs actions in a state-machine like manner, where requests come in and are serviced as a function of the robot's current state.
-
-        Args:
-            node (Node): _description_
-            robot (URRobotSM): _description_
-            engagement_debounce (float | None, optional): _description_. Defaults to None.
-            state_change_callback (Callable[[RobotControlStatus], None], optional): _description_. Defaults to None.
         """
         self._state = RobotControlStatus.UNINITIALIZED
         self._robot_mutex = threading.RLock()
@@ -91,6 +87,7 @@ class RobotControlArbiter:
 
         self._node = node
         self._robot = robot
+        self._simulate_tool = simulate_tool
 
         self._state_change_callback = state_change_callback
         self._deploy_feedback_callback = deploy_feedback_callback
@@ -100,12 +97,14 @@ class RobotControlArbiter:
 
         self._is_active = False
 
-        self._pending_trajectory_state: RobotControlStatus | None = None
+        self._pending_trajectory_state: RobotControlStatus | None = RobotControlStatus.ERROR
         self._previous_state: RobotControlStatus = RobotControlStatus.UNINITIALIZED
         
         self._pending_exercise: Exercise | None = None
         self._tool_state = ToolState(is_on=False, is_engaged=False)
         self._input_device_state = InputState(is_active=False)
+        self._cycle_signal = threading.Event()
+        self._cycle_signal.set()
 
         # Subscribe to relevant control topics
         self._tool_status = self._node.create_subscription(
@@ -199,6 +198,10 @@ class RobotControlArbiter:
         # 2) the raw tool state is disengaged and our debounce timer is active (signaling the "true" state is engaged)
         #    - In addition, the debounce must have been run since the initial state is disengaged
         with self._telemetry_mutex:
+            if self._simulate_tool:
+                # Always assume tool is engaged...
+                return True
+            
             is_engaged = (self._tool_state.is_engaged and not self._debounce_timer_running) or \
                     (self._debounce_timer_running and not self._tool_state.is_engaged and self._has_debounce_been_run)
 
@@ -213,6 +216,9 @@ class RobotControlArbiter:
         Args:
             state (RobotControlStatus): Updated state
         """
+        # TODO(george): understand why redundant state changes seem to keep happening...
+        # Regardless, they should be ignored
+        if self._state == state: return
         self._node.get_logger().info(f"State: {self._state.name} -> {state.name}")
         self._previous_state = self._state
         self._state = state
@@ -245,18 +251,19 @@ class RobotControlArbiter:
                 self._change_state(RobotControlStatus.ERROR)
                 return False
 
-            # Set tool voltage to 12V
-            request = self._robot.call_service(
-                URService.IOAndStatusController.SRV_SET_IO,
-                request=SetIO.Request(fun=SetIO.Request.FUN_SET_TOOL_VOLTAGE, 
-                                        state=float(SetIO.Request.STATE_TOOL_VOLTAGE_12V))
-            )
+            if not self._simulate_tool:
+                # Set tool voltage to 12V
+                request = self._robot.call_service(
+                    URService.IOAndStatusController.SRV_SET_IO,
+                    request=SetIO.Request(fun=SetIO.Request.FUN_SET_TOOL_VOLTAGE, 
+                                            state=float(SetIO.Request.STATE_TOOL_VOLTAGE_12V))
+                )
 
-            if request is not None and request.success:
-                pass
-            else:
-                self._change_state(RobotControlStatus.ERROR)
-                return False
+                if request is not None and request.success:
+                    pass
+                else:
+                    self._change_state(RobotControlStatus.ERROR)
+                    return False
 
             self._change_state(RobotControlStatus.INITIALIZED)
             return True
@@ -340,25 +347,38 @@ class RobotControlArbiter:
 
     def move_to_home(self, home: list[list[float]]):
         self._home_pose = home
+        self._pending_trajectory_state = RobotControlStatus.IDLE
         self._move_to(self._home_pose)
 
     def reset_arm_pose(self):
         if self._home_pose is not None:
+            self._pending_trajectory_state = RobotControlStatus.IDLE
             self._move_to(self._home_pose)
 
     def preview_exercise(self, signal: threading.Event):
         def cycle_trajectory():
             signal.wait()
 
+            starting_state = self._state
+            self._change_state(RobotControlStatus.PREVIEW)
+
+            reverse = False
             future: Future | None = None
+
             while self._pending_exercise is not None and \
                 self._state == RobotControlStatus.PREVIEW and \
                     signal.is_set():
                         if self._tool_state.is_on and self._tool_state.is_engaged:
                             self._pause_program()
                             return
-                    
-                        if future is None or future.done():
+
+                        if self._cycle_signal.is_set():
+                            self._robot.set_action_completion_callback(self._handle_trajectory_future)
+                            self._robot.set_action_result_callback(self._robot_control_completion)
+
+                            self._node.get_logger().info("Sending new preview trajectory")
+                            self._pending_trajectory_state = RobotControlStatus.PREVIEW
+                            
                             # Skip first iteration since duration @ t0 = 0
                             future = self._robot.send_trajectory(
                                 self._pending_exercise.joint_angles[1:] if not reverse else self._pending_exercise.joint_angles[::-1][1:],
@@ -373,19 +393,19 @@ class RobotControlArbiter:
                                 raise ValueError(msg)
                 
                             reverse = not reverse
+                            self._cycle_signal.clear()
+
+                        self._cycle_signal.wait(0.1)
 
             if not signal.is_set():
                 # Return to the starting position
-                self._robot.send_trajectory(
-                    [self._pending_exercise.joint_angles[0]],
-                    [Duration(sec=10.0)],
-                    blocking=True
+                self._pending_trajectory_state = starting_state
+                self._move_to(
+                    self._pending_exercise.joint_angles[0],
                 )
 
-            return
-
-        if self._pending_exercise is not None and (self._state == RobotControlStatus.IDLE):
-            self._change_state(RobotControlStatus.PREVIEW)
+        if self._pending_exercise is not None and (self._state == RobotControlStatus.IDLE or self._state == RobotControlStatus.READY):
+            self._node.get_logger().info("Previewing exercise")
             threading.Thread(target=cycle_trajectory, daemon=True).start()
             return True
         
@@ -401,6 +421,7 @@ class RobotControlArbiter:
         else:
             self._node.get_logger().error(f"Trajectory failure: {future.result()}")
             self._change_state(RobotControlStatus.ERROR)
+            if not self._cycle_signal.is_set(): self._cycle_signal.set()
 
     def deploy_robot(self, waypoints: list[list[float]], durations: list[Duration]):
         with self._robot_mutex:
@@ -413,7 +434,7 @@ class RobotControlArbiter:
                 blocking=False
             )
 
-    def _move_to(self, pose: list[float], duration: Duration = Duration(sec=10)):
+    def _move_to(self, pose: list[float], duration: Duration = Duration(sec=_DEFAULT_TRAJECTORY_DURATION)):
         self._robot.set_action_completion_callback(self._handle_trajectory_future)
         self._robot.set_action_result_callback(self._robot_control_completion)
 
@@ -424,7 +445,8 @@ class RobotControlArbiter:
         )
 
     def _robot_control_completion(self, *args):
-        self._change_state(RobotControlStatus.IDLE)
+        self._change_state(self._pending_trajectory_state)
+        if not self._cycle_signal.is_set(): self._cycle_signal.set()
 
     def _trip_tool_state_watchdog(self):
         with self._telemetry_mutex:
@@ -455,9 +477,9 @@ class RobotControlArbiter:
     def load_experiment(self, exercise: Exercise) -> bool:
         with self._telemetry_mutex:
             if self._state == RobotControlStatus.IDLE:
-                self._exercise = exercise
+                self._pending_exercise = exercise
                 self._pending_trajectory_state = RobotControlStatus.READY
-                self._move_to(self._exercise.joint_angles[0])
+                self._move_to(self._pending_exercise.joint_angles[0])
                 return True
             else:
                 return False
@@ -507,6 +529,7 @@ class RobotControlArbiter:
             )
 
             self._robot.run_dynamic_force_mode(goal, blocking=False)
+            return True
 
     def _pause_program(self) -> bool:
         with self._robot_mutex:
@@ -536,6 +559,7 @@ class RobotControlArbiter:
             match self._robot.current_mode.mode:
                 case RobotMode.RUNNING | RobotMode.IDLE:
                     if self._state < RobotControlStatus.INITIALIZED and self._robot.program_running:
+                        # TODO(george): this outputs like crazy when starting the program after setup was completed on a previous session. Address somehow.
                         # If the program is running and we don't think it is, stop it
                         self._node.get_logger().warning(f"Unexpected current mode {self._robot.current_mode} in local state {self._state.name}")
                         self.stop_robot_program()
@@ -549,6 +573,7 @@ class RobotControlArbiter:
                     pass
                 case _:
                     if self._state > RobotControlStatus.UNINITIALIZED:
+                        self._node.get_logger().error(f"Encountered safety mode {self._robot.current_safety_mode}")
                         self._change_state(RobotControlStatus.ERROR)
 
             match self._state:
@@ -558,19 +583,18 @@ class RobotControlArbiter:
                     if self.is_ready:
                         self._change_state(state=RobotControlStatus.READY)
                 case RobotControlStatus.TRAJECTORY:
+                    # TODO(george): update
                     if self.tool_engaged:
                         self._change_state(RobotControlStatus.IDLE)
                 case RobotControlStatus.PLANNING:
-                    self._robot.ping_freedrive()
-                    # if self.tool_engaged:
-                    #     # Ping freedrive if the tool is engaged
-                    #     self._robot.ping_freedrive()
-                    # else:
-                    #     # Disable freedrive if the tool is disengaged
-                    #     self._robot.disable_freedrive()
-                    #     self._change_state(RobotControlStatus.IDLE)
+                    if self.tool_engaged:
+                        # Ping freedrive if the tool is engaged
+                        self._robot.ping_freedrive()
+                    else:
+                        # Disable freedrive if the tool is disengaged
+                        self._robot.disable_freedrive()
                 case RobotControlStatus.READY:
-                    if self.is_ready and self.tool_engaged and self._pending_exercise is None:
+                    if self.is_ready and self.tool_engaged and self._pending_exercise is not None:
                         # Attempt to start the experiment
                         if self._start_experiment(self._pending_exercise):
                             self._change_state(state=RobotControlStatus.ACTIVE)
