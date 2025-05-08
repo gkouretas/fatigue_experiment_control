@@ -534,21 +534,35 @@ class RobotControlArbiter:
     def _pause_program(self) -> bool:
         with self._robot_mutex:
             status = False
-            if result := self._robot.call_service(URService.DashboardClient.SRV_PAUSE):
+            if self._state == RobotControlStatus.ACTIVE:
+                srv = URService.DynamicPathForceModeController.SRV_DYNAMIC_FORCE_MODE_SET_EXECUTION
+                req = URService.get_service_type(URService.DynamicPathForceModeController.SRV_DYNAMIC_FORCE_MODE_SET_EXECUTION).Request(run=False)
+            else:
+                srv = URService.DashboardClient.SRV_PAUSE
+                req = None # Use default
+            if result := self._robot.call_service(srv, req):
                 status = result.success
                 if status:
                     self._change_state(RobotControlStatus.PAUSED)
+                else:
+                    self._change_state(RobotControlStatus.ERROR)
 
             return status
 
     def _play_program(self) -> bool:
         with self._robot_mutex:
             status = False
-            if result := self._robot.call_service(URService.DashboardClient.SRV_PLAY):
-                status = result.success
-                if status:
-                    self._change_state(RobotControlStatus.IDLE)
+            if self._state == RobotControlStatus.PAUSED and self._previous_state == RobotControlStatus.ACTIVE:
+                srv = URService.DynamicPathForceModeController.SRV_DYNAMIC_FORCE_MODE_SET_EXECUTION
+                req = URService.get_service_type(URService.DynamicPathForceModeController.SRV_DYNAMIC_FORCE_MODE_SET_EXECUTION).Request(run=True)
+            else:
+                srv = URService.DashboardClient.SRV_PLAY
+                req = None # Use default
 
+            if result := self._robot.call_service(srv, req):
+                status = result.success
+                
+            # TODO(george): defer transitions to caller, but is this preferred?
             return status
 
     _pause_experiment = _pause_program
@@ -577,11 +591,8 @@ class RobotControlArbiter:
                         self._change_state(RobotControlStatus.ERROR)
 
             match self._state:
-                case RobotControlStatus.UNINITIALIZED | RobotControlStatus.INITIALIZED:
+                case RobotControlStatus.UNINITIALIZED | RobotControlStatus.INITIALIZED | RobotControlStatus.IDLE:
                     pass
-                case RobotControlStatus.IDLE:
-                    if self.is_ready:
-                        self._change_state(state=RobotControlStatus.READY)
                 case RobotControlStatus.TRAJECTORY:
                     # TODO(george): update
                     if self.tool_engaged:
@@ -601,7 +612,8 @@ class RobotControlArbiter:
                         else:
                             self._change_state(state=RobotControlStatus.ERROR)
                 case RobotControlStatus.ACTIVE:
-                    if not self.is_ready:
+                    if not self.is_ready or not self.tool_engaged:
+                        self._node.get_logger().info("HERE")
                         # If we are not ready, pause the experiment
                         if self._pause_experiment():
                             self._change_state(state=RobotControlStatus.PAUSED)
