@@ -8,7 +8,8 @@ from rclpy.executors import MultiThreadedExecutor
 
 from ur10e_custom_control.ur_control_qt import URControlQtWindow
 from fatigue_experiment_control.robot_control_manager import RobotControlArbiter, RobotControlStatus
-from fatigue_experiment_control.exercise_manager import ExerciseManager, ExerciseType, Exercise
+from fatigue_experiment_control.exercise_manager import ExerciseManager, ExerciseType
+from fatigue_experiment_control.rviz_manager import RvizManager
 from ros2_mindrove.mindrove_configs import MINDROVE_ROS_TOPIC_NAME
 from ros2_plux_biosignals.plux_configs import PLUX_ROS_TOPIC_NAME
 from idl_definitions.msg import (
@@ -56,18 +57,26 @@ class ExperimentControlGui(URControlQtWindow):
         self._mindrove_watchdog = QLabel(text="Mindrove: inactive")
         self._plux_watchdog = QLabel(text="Plux: inactive")
 
+        self._rviz_manager = RvizManager(
+            node=node,
+            refresh_rate=1.0/120.0,
+            move_camera_with_exercise=True,
+            align_with_path=False)
+
         self._robot_manager = RobotControlArbiter(
             node=node,
             robot=self._robot, 
             simulate_tool=not _USE_TOOL,
             engagement_debounce=0.5,
             state_change_callback=self._refresh_ui,
+            experiment_feedback_callback=self._rviz_manager.exercise_feedback,
             watchdog_input_device_change_callback=partial(self._update_watchdog, self._input_device_watchdog),
             watchdog_tool_change_callback=partial(self._update_watchdog, self._tool_watchdog))
         
         self._exercise_manager = ExerciseManager(
             node=node,
-            distance_threshold=_DISTANCE_THRESHOLD)
+            distance_threshold=_DISTANCE_THRESHOLD,
+            pose_callback=self._rviz_manager.update_pose)
 
         self._mindrove_sub = self._node.create_subscription(
             msg_type=MindroveArmBandEightChannelMsg,
@@ -96,6 +105,7 @@ class ExperimentControlGui(URControlQtWindow):
         self._buttons = {
             QPushButton("INITIALIZE ROBOT", self): self._robot_manager.start_robot_program,
             QPushButton("STOP ROBOT", self): self._robot_manager.stop_experiment_override,
+            # TODO(george): call RViz visualizer to set handedness here...
             QPushButton("DEPLOY ROBOT LHS", self): partial(self._robot_manager.move_to_home, _LHS_JOINT_ANGLES),
             QPushButton("DEPLOY ROBOT RHS", self): partial(self._robot_manager.move_to_home, _RHS_JOINT_ANGLES),
             QPushButton("RESET ARM", self): self._robot_manager.reset_arm_pose,
@@ -110,7 +120,16 @@ class ExperimentControlGui(URControlQtWindow):
 
         exercise_tab_layout = QVBoxLayout()
         self._exercise_tab_label = QLabel(f"State: {RobotControlStatus.UNINITIALIZED.name}")
-        exercise_tab_layout.addWidget(self._exercise_tab_label)
+        
+        for label in (
+            self._exercise_tab_label,
+            self._tool_watchdog,
+            self._input_device_watchdog,
+            self._mindrove_watchdog,
+            self._plux_watchdog,
+        ):
+            exercise_tab_layout.addWidget(label)
+        
         self._create_tab(name="Exercise Tab", layout=exercise_tab_layout, tab_create_func=self._exercise_tab_constructor)
 
     @property
@@ -215,6 +234,9 @@ class ExperimentControlGui(URControlQtWindow):
                 exercise=exercise
             ):
                 self._node.get_logger().error("Failed to set experiment")
+            else:
+                # Visualize the exercise once it has been set
+                self._rviz_manager.visualize_exercise(exercise=exercise)
 
     def __save_exercise(self):
         if exercise := self._exercise_manager.get_exercise():

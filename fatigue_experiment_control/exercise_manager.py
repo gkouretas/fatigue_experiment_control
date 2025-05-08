@@ -7,10 +7,16 @@ from rclpy.node import Node
 from dataclasses import dataclass, asdict
 from enum import IntEnum, auto
 from sensor_msgs.msg import JointState
-from geometry_msgs.msg import PoseStamped
 from builtin_interfaces.msg import Duration
 
 from ur10e_custom_control.ur10e_configs import UR_QOS_PROFILE
+
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path
+from visualization_msgs.msg import Marker
+from tf2_ros import TransformBroadcaster
+from std_msgs.msg import Header
+from typing import Callable
 
 @dataclass
 class Exercise:
@@ -27,10 +33,15 @@ class ExerciseType(IntEnum):
     VERTICAL_LATERAL_RAISE = auto()
 
 class ExerciseManager:
-    def __init__(self, node: Node, distance_threshold: float):
+    def __init__(self, 
+                 node: Node, 
+                 distance_threshold: float,
+                 pose_callback: Callable[[PoseStamped], None] | None = None):
+        
         self._node = node
         self._active_exercise: Exercise = None
         self._distance_threshold = distance_threshold
+        self._pose_callback = pose_callback
 
         self._pose_decimation = 1
         self._pose_counter = 0
@@ -54,6 +65,11 @@ class ExerciseManager:
             qos_profile=UR_QOS_PROFILE
         )
 
+        self._target_pose_publisher = self._node.create_publisher(PoseStamped, "dynamic_force_target_pose", 0)
+        self._path_publisher = self._node.create_publisher(Path, "dynamic_force_path", 0)
+        self._error_vector_publisher = self._node.create_publisher(Marker, "dynamic_force_error_vector", 0)
+        self._rviz_camera_tform_publisher = TransformBroadcaster(self._node, 0)
+
         self._lock = threading.Lock()
 
     def get_exercise(self, decimated: bool = True) -> Exercise | None:
@@ -65,7 +81,7 @@ class ExerciseManager:
             exercise.poses = self.generate_path(exercise.poses)
 
         return exercise
-    
+        
     def save_exercise(self, fp: os.PathLike) -> bool:
         if self._active_exercise is None:
             self._node.get_logger().error("No active exercise")
@@ -120,6 +136,9 @@ class ExerciseManager:
                 self._pose_counter += 1
                 if self._pose_counter % self._pose_decimation == 0:
                     self._active_exercise.poses.append(pose)
+
+        if callback := self._pose_callback:
+            callback(pose)
 
     def add_joint_state(self, joints: JointState):
         with self._lock:

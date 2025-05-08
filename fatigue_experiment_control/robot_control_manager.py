@@ -492,7 +492,7 @@ class RobotControlArbiter:
     def _start_experiment(self, exercise: Exercise) -> bool:
         with self._robot_mutex:
             self._robot.set_action_completion_callback(self._handle_trajectory_future)
-            #self._robot.set_action_feedback_callback(self._experiment_feedback)
+            self._robot.set_action_feedback_callback(self._experiment_feedback_callback)
             self._robot.set_action_result_callback(self._robot_control_completion)
             
             goal = DynamicForceModePath.Goal(
@@ -613,7 +613,6 @@ class RobotControlArbiter:
                             self._change_state(state=RobotControlStatus.ERROR)
                 case RobotControlStatus.ACTIVE:
                     if not self.is_ready or not self.tool_engaged:
-                        self._node.get_logger().info("HERE")
                         # If we are not ready, pause the experiment
                         if self._pause_experiment():
                             self._change_state(state=RobotControlStatus.PAUSED)
