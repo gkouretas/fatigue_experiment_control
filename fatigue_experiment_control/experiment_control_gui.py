@@ -35,18 +35,18 @@ _LHS_JOINT_ANGLES = np.radians([
     118.38,
     -149.50,
     90.26,
-    33.66,
+    -90.00,
     263.77
 ]).tolist()
-_RHS_JOINT_ANGLES = np.radians([
-    -119.57,
-    -111.99,
-    -38.23,
-    -89.88,
-    143.33,
-    -93.60
+_RHS_JOINT_ANGLES = np.radians([    
+    -39.06,
+    104.72,
+    -155.72,
+    90.21,
+    -90.10,
+    267.40
 ]).tolist()
-_USE_TOOL = False
+_USE_TOOL = True
 
 class ExperimentControlGui(URControlQtWindow):
     def __init__(self, node):

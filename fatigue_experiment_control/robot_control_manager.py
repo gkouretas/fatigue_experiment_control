@@ -97,7 +97,7 @@ class RobotControlArbiter:
 
         self._is_active = False
 
-        self._pending_trajectory_state: RobotControlStatus | None = RobotControlStatus.ERROR
+        self._pending_trajectory_state: RobotControlStatus | None = None
         self._previous_state: RobotControlStatus = RobotControlStatus.UNINITIALIZED
         
         self._pending_exercise: Exercise | None = None
@@ -347,13 +347,12 @@ class RobotControlArbiter:
 
     def move_to_home(self, home: list[list[float]]):
         self._home_pose = home
-        self._pending_trajectory_state = RobotControlStatus.IDLE
-        self._move_to(self._home_pose)
+        self._move_to(self._home_pose, pending_state=RobotControlStatus.IDLE)
 
     def reset_arm_pose(self):
         if self._home_pose is not None:
             self._pending_trajectory_state = RobotControlStatus.IDLE
-            self._move_to(self._home_pose)
+            self._move_to(self._home_pose, pending_state=RobotControlStatus.IDLE)
 
     def preview_exercise(self, signal: threading.Event):
         def cycle_trajectory():
@@ -373,7 +372,7 @@ class RobotControlArbiter:
                             return
 
                         if self._cycle_signal.is_set():
-                            self._robot.set_action_completion_callback(self._handle_trajectory_future)
+                            self._robot.set_action_completion_callback(self._handle_action)
                             self._robot.set_action_result_callback(self._robot_control_completion)
 
                             self._node.get_logger().info("Sending new preview trajectory")
@@ -399,9 +398,9 @@ class RobotControlArbiter:
 
             if not signal.is_set():
                 # Return to the starting position
-                self._pending_trajectory_state = starting_state
                 self._move_to(
                     self._pending_exercise.joint_angles[0],
+                    pending_state=starting_state
                 )
 
         if self._pending_exercise is not None and (self._state == RobotControlStatus.IDLE or self._state == RobotControlStatus.READY):
@@ -411,31 +410,22 @@ class RobotControlArbiter:
         
         return False
 
-    def _handle_trajectory_future(self, ac_client: ActionClient, result_callback: Callable | None, future: Future):
+    def _handle_action(self, ac_client: ActionClient, result_callback: Callable | None, future: Future):
         result = future.result()
         if result is not None and result.accepted:
-            self._node.get_logger().info("Trajectory accepted")
+            self._node.get_logger().info("Action accepted")
             result_future = ac_client._get_result_async(future.result())
             if result_callback is not None:
                 result_future.add_done_callback(result_callback)
         else:
-            self._node.get_logger().error(f"Trajectory failure: {future.result()}")
+            self._node.get_logger().error(f"Action failure: {future.result()}")
             self._change_state(RobotControlStatus.ERROR)
             if not self._cycle_signal.is_set(): self._cycle_signal.set()
 
-    def deploy_robot(self, waypoints: list[list[float]], durations: list[Duration]):
-        with self._robot_mutex:
-            self._robot.set_action_completion_callback(self._handle_trajectory_future)
-            self._robot.set_action_result_callback(self._robot_control_completion)
-            
-            self._robot.send_trajectory(
-                waypts=waypoints,
-                time_vec=durations,
-                blocking=False
-            )
-
-    def _move_to(self, pose: list[float], duration: Duration = Duration(sec=_DEFAULT_TRAJECTORY_DURATION)):
-        self._robot.set_action_completion_callback(self._handle_trajectory_future)
+    def _move_to(self, pose: list[float], duration: Duration = Duration(sec=_DEFAULT_TRAJECTORY_DURATION), pending_state: RobotControlStatus | None = None):
+        self._pending_trajectory_state = pending_state
+        self._change_state(RobotControlStatus.TRAJECTORY)
+        self._robot.set_action_completion_callback(self._handle_action)
         self._robot.set_action_result_callback(self._robot_control_completion)
 
         self._robot.send_trajectory(
@@ -445,8 +435,11 @@ class RobotControlArbiter:
         )
 
     def _robot_control_completion(self, *args):
-        self._change_state(self._pending_trajectory_state)
-        if not self._cycle_signal.is_set(): self._cycle_signal.set()
+        self._node.get_logger().info("Trajectory complete")
+        with self._robot_mutex:
+            if self._pending_trajectory_state is not None:
+                self._change_state(self._pending_trajectory_state)
+            if not self._cycle_signal.is_set(): self._cycle_signal.set()
 
     def _trip_tool_state_watchdog(self):
         with self._telemetry_mutex:
@@ -478,8 +471,7 @@ class RobotControlArbiter:
         with self._telemetry_mutex:
             if self._state == RobotControlStatus.IDLE:
                 self._pending_exercise = exercise
-                self._pending_trajectory_state = RobotControlStatus.READY
-                self._move_to(self._pending_exercise.joint_angles[0])
+                self._move_to(self._pending_exercise.joint_angles[0], pending_state=RobotControlStatus.READY)
                 return True
             else:
                 return False
@@ -489,11 +481,17 @@ class RobotControlArbiter:
             self._robot.stop_robot()
             self._change_state(RobotControlStatus.UNINITIALIZED)
 
+    def _exercise_completion(self, *args):
+        self._node.get_logger().info("Experiment completed!")
+        with self._robot_mutex:
+            self._pending_exercise = None
+            self._change_state(RobotControlStatus.IDLE)
+
     def _start_experiment(self, exercise: Exercise) -> bool:
         with self._robot_mutex:
-            self._robot.set_action_completion_callback(self._handle_trajectory_future)
+            self._robot.set_action_completion_callback(self._handle_action)
             self._robot.set_action_feedback_callback(self._experiment_feedback_callback)
-            self._robot.set_action_result_callback(self._robot_control_completion)
+            self._robot.set_action_result_callback(self._exercise_completion)
             
             goal = DynamicForceModePath.Goal(
                 task_frame=exercise.poses[0],

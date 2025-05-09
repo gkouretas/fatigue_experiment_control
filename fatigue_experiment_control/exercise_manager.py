@@ -181,15 +181,15 @@ class ExerciseManager:
         match exercise:
             case ExerciseType.HORIZONTAL_BICEP_CURL:
                 # Only enable translation in the xy-plane
-                return [True, True, False, False, False, False]
+                return [True, True, False, False, False, True]
             case ExerciseType.VERTICAL_BICEP_CURL:
                 # Only enable translation in yz-plane
-                return [False, True, True, False, False, False]
+                return [True, False, True, False, True, False]
             case ExerciseType.HORIZONTAL_LATERAL_RAISE:
                 # Only enable translation in the xy-plane and rotation in the y-axis
-                return [True, True, False, False, True, False]
+                return [True, True, False, False, False, True]
             case ExerciseType.VERTICAL_LATERAL_RAISE:
                 # Only enable translation in the yz-plane and rotation in the y-axis
-                return [False, True, True, False, True, False]
+                return [True, False, True, False, True, False]
             case _:
                 raise ValueError(f"Unsupported exercise type: {exercise}")
