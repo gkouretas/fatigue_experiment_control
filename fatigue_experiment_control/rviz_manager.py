@@ -7,6 +7,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Pose, PoseStamped, Quaternion
 from geometry_msgs.msg import Transform, TransformStamped, Vector3, Point, Wrench, Twist
 from geometry_msgs.msg import PoseStamped
+from builtin_interfaces.msg import Duration
 from nav_msgs.msg import Path
 from visualization_msgs.msg import Marker
 from tf2_ros import TransformBroadcaster
@@ -14,6 +15,8 @@ from std_msgs.msg import Header
 from std_msgs.msg import ColorRGBA
 
 from fatigue_experiment_control.exercise_manager import Exercise
+
+from PyQt5.QtCore import Qt, QMetaObject
 
 def pose_to_ndarray(pose: Pose):
     rotmat = transforms3d.quaternions.quat2mat([
@@ -30,6 +33,12 @@ def pose_to_ndarray(pose: Pose):
         [0, 0, 0, 1]
     ])
 
+from PyQt5.QtWidgets import QProgressDialog
+
+class ExerciseProgressWidget(QProgressDialog):
+    def __init__(self):
+        super().__init__("Processing...", "Cancel", 0, 100)
+
 class RvizManager:
     def __init__(self, 
                  node: Node,
@@ -43,11 +52,16 @@ class RvizManager:
         self._move_camera_with_exercise = move_camera_with_exercise
         self._align_with_path = align_with_path
 
-        self._target_pose_publisher = self._node.create_publisher(PoseStamped, "dynamic_force_target_pose", 0)
+        # self._target_pose_publisher = self._node.create_publisher(PoseStamped, "dynamic_force_target_pose", 0)
+        self._target_pose_publisher = self._node.create_publisher(Marker, "dynamic_force_target_pose_marker", 0)
         self._path_publisher = self._node.create_publisher(Path, "dynamic_force_path", 0)
         self._error_vector_publisher = self._node.create_publisher(Marker, "dynamic_force_error_vector", 0)
+        self._progress_text_publisher = self._node.create_publisher(Marker, "dynamic_force_progress_text", 0)
         self._rviz_camera_tform_publisher = TransformBroadcaster(self._node, 0)
+
         self._right_handed = True
+        # self._progress_widget = ExerciseProgressWidget()
+        # self._progress_widget.show()
 
         self._lock = threading.Lock()
 
@@ -88,6 +102,7 @@ class RvizManager:
             with self._lock:
                 if self._pose is None: return
                 frame = self._pose
+
 
         if self._align_with_path:
             if isinstance(frame, TransformStamped): 
@@ -197,11 +212,74 @@ class RvizManager:
                         y=feedback.feedback.pose_desired.position.y,
                         z=feedback.feedback.pose_desired.position.z)
             ],
+            lifetime=Duration(sec=1),
             color=ColorRGBA(r=1.0,g=0.0,b=0.0,a=1.0)
         )
 
-        self._target_pose_publisher.publish(target_pose)
+        # self._target_pose_publisher.publish(target_pose)
+        self._target_pose_publisher.publish(
+            Marker(
+                header=Header(frame_id='base'),
+                type=Marker.LINE_LIST,
+                action=Marker.ADD,
+                scale=Vector3(x=0.01, y=0.00, z=0.00),
+                points=[
+                    Point(),
+                    Point(x=0.1, 
+                          y=0.0, 
+                          z=0.0),
+                    Point(),
+                    Point(x=0.0, 
+                          y=0.1, 
+                          z=0.0),
+                    Point(),
+                    Point(x=0.0, 
+                          y=0.0,
+                          z=0.1),
+                ],
+                pose=feedback.feedback.pose_desired,
+                lifetime=Duration(sec=1),
+                colors=[
+                    ColorRGBA(r=1.0,g=0.0,b=0.0,a=1.0),
+                    ColorRGBA(r=1.0,g=0.0,b=0.0,a=1.0),
+                    ColorRGBA(r=0.0,g=1.0,b=0.0,a=1.0),
+                    ColorRGBA(r=0.0,g=1.0,b=0.0,a=1.0),
+                    ColorRGBA(r=0.0,g=0.0,b=1.0,a=1.0),
+                    ColorRGBA(r=0.0,g=0.0,b=1.0,a=1.0)
+                ]
+            )
+        )
+
         self._error_vector_publisher.publish(error_vector)
+        # self._progress_widget.setValue(int(feedback.feedback.progress_percentage * 100))
+
+        self._progress_text_publisher.publish(
+            Marker(
+                header=Header(frame_id='wrist_3_link'),
+                lifetime=Duration(sec=1),
+                type=Marker.TEXT_VIEW_FACING,
+                pose=Pose(position=Point(z=-0.25)),
+                scale=Vector3(x=0.1, y=0.0, z=0.1),
+                text=f"Progress [{'active' if not feedback.feedback.is_paused else 'paused'}]: {(feedback.feedback.progress_percentage * 100):.2f}%",
+                color=ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)
+            )
+        )
+
+    def reset(self):
+        # if not self._progress_widget.isHidden():
+        #     QMetaObject.invokeMethod(self._progress_widget, 'hide', Qt.ConnectionType.QueuedConnection)
+
+        self._progress_text_publisher.publish(
+            Marker(
+                header=Header(frame_id='wrist_3_link'),
+                lifetime=Duration(sec=1),
+                type=Marker.TEXT_VIEW_FACING,
+                pose=Pose(position=Point(z=-0.25)),
+                scale=Vector3(x=0.0, y=0.0, z=0.1),
+                text="Paused",
+                color=ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)
+            )
+        )
 
     def visualize_exercise(self, exercise: Exercise):
         self._path_publisher.publish(Path(header=Header(frame_id="base"), poses=exercise.poses))

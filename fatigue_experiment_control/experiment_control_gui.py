@@ -24,7 +24,6 @@ from python_utils.utils.datetime_utils import postfix_string_with_current_time
 from ur_msgs.srv import SetFreedriveParams
 
 from PyQt5.QtWidgets import *
-from PyQt5.QtCore import QTimer, QThread
 
 from functools import partial
 
@@ -46,14 +45,14 @@ _RHS_JOINT_ANGLES = np.radians([
     -90.10,
     267.40
 ]).tolist()
-_USE_TOOL = True
+_USE_TOOL = False
 
 class ExperimentControlGui(URControlQtWindow):
     def __init__(self, node):
         super().__init__(node)
 
         self._tool_watchdog = QLabel(text="Tool: inactive")
-        self._input_device_watchdog = QLabel(text="Input device: inacive")
+        self._input_device_watchdog = QLabel(text="Input device: inactive")
         self._mindrove_watchdog = QLabel(text="Mindrove: inactive")
         self._plux_watchdog = QLabel(text="Plux: inactive")
 
@@ -69,7 +68,7 @@ class ExperimentControlGui(URControlQtWindow):
             simulate_tool=not _USE_TOOL,
             engagement_debounce=0.5,
             state_change_callback=self._refresh_ui,
-            experiment_feedback_callback=self._rviz_manager.exercise_feedback,
+            experiment_feedback_callback=self.exercise_feedback,
             watchdog_input_device_change_callback=partial(self._update_watchdog, self._input_device_watchdog),
             watchdog_tool_change_callback=partial(self._update_watchdog, self._tool_watchdog))
         
@@ -135,6 +134,10 @@ class ExperimentControlGui(URControlQtWindow):
     @property
     def sensor_watchdog(self):
         return 'inactive' in self._plux_watchdog.text() or 'inactive' in self._mindrove_watchdog.text()
+
+    from ur_msgs.action._dynamic_force_mode_path import DynamicForceModePath_FeedbackMessage
+    def exercise_feedback(self, feedback: DynamicForceModePath_FeedbackMessage):        
+        self._rviz_manager.exercise_feedback(feedback)
 
     def _refresh_ui(self, state: RobotControlStatus):
         if not _USE_ROBOT:

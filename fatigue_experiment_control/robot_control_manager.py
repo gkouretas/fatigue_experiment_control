@@ -9,7 +9,7 @@ from rclpy.action import ActionClient
 from rclpy.client import Future
 
 from ur_msgs.msg import ToolDataMsg
-from idl_definitions.msg import UserInputMsg
+from idl_definitions.msg import UserInputMsg, ExerciseState
 from pi_user_input_node.user_input_node_config import USER_INPUT_QOS_PROFILE, USER_INPUT_TOPIC_NAME
 from ur10e_custom_control.ur_robot_sm import URRobotSM
 from ur_msgs.action import DynamicForceModePath
@@ -20,6 +20,7 @@ from ur10e_custom_control.ur10e_typedefs import URService
 from ur10e_custom_control.ur10e_configs import UR_QOS_PROFILE
 from control_msgs.action import FollowJointTrajectory
 from fatigue_experiment_control.exercise_manager import Exercise
+from fatigue_experiment_control.fatigue_experiment_control_configs import *
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import Wrench, Twist, Vector3
 from nav_msgs.msg import Path
@@ -119,6 +120,12 @@ class RobotControlArbiter:
             topic=USER_INPUT_TOPIC_NAME,
             qos_profile=USER_INPUT_QOS_PROFILE,
             callback=self._update_user_input_state
+        )
+
+        self._fatigue_experiment_state = self._node.create_publisher(
+            msg_type=ExerciseState,
+            topic=FATIGUE_EXPERIMENT_CONTROL_TOPIC_NAME,
+            qos_profile=FATIGUE_QOS_PROFILE
         )
 
         # Watchdog monitors for tool state / input device state
@@ -636,6 +643,9 @@ class RobotControlArbiter:
     def monitor_experiment(self):
         with self._robot_mutex:
             self._run_state_machine()
+
+        # Publish the current state
+        self._fatigue_experiment_state.publish(ExerciseState(state=self._state.value))
 
     def _update_tool_state(self, msg: ToolDataMsg):
         previous_state = self._tool_state.is_engaged

@@ -1,0 +1,2 @@
+FATIGUE_EXPERIMENT_CONTROL_TOPIC_NAME = "/fatigue_experiment_state"
+FATIGUE_QOS_PROFILE = 0
