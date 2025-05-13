@@ -20,6 +20,7 @@ from idl_definitions.msg import (
 from python_utils.ros2_utils.visualization.qt_integration import RclpySpinner
 from python_utils.ros2_utils.comms.node_manager import get_realtime_qos_profile
 from python_utils.utils.datetime_utils import postfix_string_with_current_time
+from python_utils.ros2_utils.comms.rosbag_manager import RosbagManager 
 
 from ur_msgs.srv import SetFreedriveParams
 
@@ -46,6 +47,7 @@ _RHS_JOINT_ANGLES = np.radians([
     267.40
 ]).tolist()
 _USE_TOOL = False
+_NUM_REPETITIONS = 11
 
 class ExperimentControlGui(URControlQtWindow):
     def __init__(self, node):
@@ -58,6 +60,7 @@ class ExperimentControlGui(URControlQtWindow):
 
         self._rviz_manager = RvizManager(
             node=node,
+            num_repetitions=_NUM_REPETITIONS,
             refresh_rate=1.0/120.0,
             move_camera_with_exercise=True,
             align_with_path=False)
@@ -66,6 +69,7 @@ class ExperimentControlGui(URControlQtWindow):
             node=node,
             robot=self._robot, 
             simulate_tool=not _USE_TOOL,
+            num_repetitions=_NUM_REPETITIONS,
             engagement_debounce=0.5,
             state_change_callback=self._refresh_ui,
             experiment_feedback_callback=self.exercise_feedback,
@@ -99,6 +103,10 @@ class ExperimentControlGui(URControlQtWindow):
         self._plux_watchdog_timer = self._node.create_timer(
             1.0,
             callback=partial(self._update_watchdog, self._plux_watchdog, False)
+        )
+
+        self._log_manager = RosbagManager(
+            node=self._node
         )
 
         self._buttons = {
@@ -142,7 +150,10 @@ class ExperimentControlGui(URControlQtWindow):
     def _refresh_ui(self, state: RobotControlStatus):
         if not _USE_ROBOT:
             return
-        
+
+        if state == RobotControlStatus.PAUSED:
+            self._log_manager.cycle_logging()
+
         self._exercise_tab_label.setText(f"State: {state.name}")
         # TODO(george): enable specific buttons based upon current state
         # for button in self._buttons.keys():
@@ -240,6 +251,9 @@ class ExperimentControlGui(URControlQtWindow):
             else:
                 # Visualize the exercise once it has been set
                 self._rviz_manager.visualize_exercise(exercise=exercise)
+
+                if not self._log_manager.cycle_logging(name=exercise.name):
+                    self._node.get_logger().error("Failed to start logging...")
 
     def __save_exercise(self):
         if exercise := self._exercise_manager.get_exercise():

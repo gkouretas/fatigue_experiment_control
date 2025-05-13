@@ -42,11 +42,14 @@ class ExerciseProgressWidget(QProgressDialog):
 class RvizManager:
     def __init__(self, 
                  node: Node,
+                 num_repetitions: int,
                  refresh_rate: float | None, 
                  move_camera_with_exercise: bool, 
                  align_with_path: bool):
         
         self._node = node
+        self._completed_reps = 0
+        self._num_repetitions = num_repetitions
         self._pose: PoseStamped = None
         self._refresh_rate = refresh_rate
         self._move_camera_with_exercise = move_camera_with_exercise
@@ -253,6 +256,12 @@ class RvizManager:
         self._error_vector_publisher.publish(error_vector)
         # self._progress_widget.setValue(int(feedback.feedback.progress_percentage * 100))
 
+        if feedback.feedback.progress_percentage == 1.0:
+            self._completed_reps += 1
+        elif self._completed_reps == self._num_repetitions:
+            # Reset the number of completed repetitions
+            self._completed_reps = 0
+
         self._progress_text_publisher.publish(
             Marker(
                 header=Header(frame_id='wrist_3_link'),
@@ -260,7 +269,7 @@ class RvizManager:
                 type=Marker.TEXT_VIEW_FACING,
                 pose=Pose(position=Point(z=-0.25)),
                 scale=Vector3(x=0.1, y=0.0, z=0.1),
-                text=f"Progress [{'active' if not feedback.feedback.is_paused else 'paused'}]: {(feedback.feedback.progress_percentage * 100):.2f}%",
+                text=f"Progress [{'active' if not feedback.feedback.is_paused else 'paused'}]: {(feedback.feedback.progress_percentage * 100):.2f}% [rep: {int(self._completed_reps//2)}/{self._num_repetitions}]", # divide number of reps by 2, since assumed to be half-reps
                 color=ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)
             )
         )

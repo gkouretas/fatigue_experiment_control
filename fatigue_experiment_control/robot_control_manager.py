@@ -1,6 +1,8 @@
 import threading
+import copy
 
 from enum import IntEnum, auto
+from collections import deque
 from typing import Callable
 
 from rclpy.node import Node
@@ -67,6 +69,7 @@ class RobotControlArbiter:
                  node: Node, 
                  robot: URRobotSM, 
                  simulate_tool: bool,
+                 num_repetitions: int,
                  engagement_debounce: float | None = None, 
                  state_change_callback: Callable[[RobotControlStatus], None] = None,
                  deploy_feedback_callback: Callable[[FollowJointTrajectory.Feedback], None] = None,
@@ -89,6 +92,9 @@ class RobotControlArbiter:
         self._node = node
         self._robot = robot
         self._simulate_tool = simulate_tool
+        self._num_repetitions = num_repetitions
+
+        self._goal_queue = deque[DynamicForceModePath.Goal]()
 
         self._state_change_callback = state_change_callback
         self._deploy_feedback_callback = deploy_feedback_callback
@@ -477,6 +483,7 @@ class RobotControlArbiter:
     def load_experiment(self, exercise: Exercise) -> bool:
         with self._telemetry_mutex:
             if self._state == RobotControlStatus.IDLE:
+                self._goal_queue.clear()
                 self._pending_exercise = exercise
                 self._move_to(self._pending_exercise.joint_angles[0], pending_state=RobotControlStatus.READY)
                 return True
@@ -489,10 +496,18 @@ class RobotControlArbiter:
             self._change_state(RobotControlStatus.UNINITIALIZED)
 
     def _exercise_completion(self, *args):
-        self._node.get_logger().info("Experiment completed!")
         with self._robot_mutex:
-            self._pending_exercise = None
-            self._change_state(RobotControlStatus.IDLE)
+            if len(self._goal_queue) > 0:
+                # Still repetitions to complete
+                goal = self._goal_queue.pop()
+
+                # TODO: will this work here, or do we need to wait for the goal to formally complete?
+                # Will find out on system, no way to test in ursim easily...
+                self._robot.run_dynamic_force_mode(goal, blocking=False)
+            else:
+                # TODO: a similar reset should happen from any transition out of active state
+                self._pending_exercise = None
+                self._change_state(RobotControlStatus.IDLE)
 
     def _start_experiment(self, exercise: Exercise) -> bool:
         with self._robot_mutex:
@@ -533,7 +548,15 @@ class RobotControlArbiter:
                 ],        
             )
 
-            self._robot.run_dynamic_force_mode(goal, blocking=False)
+            # TODO: support for both half rep and full rep recordings
+            goal_reversed = copy.deepcopy(goal)
+            goal_reversed.force_mode_path=Path(poses=exercise.poses[::-1]) # reverse the order of the poses
+            
+            for _ in range(self._num_repetitions):
+                self._goal_queue.append(goal)
+                self._goal_queue.append(goal_reversed)
+
+            self._robot.run_dynamic_force_mode(self._goal_queue.pop(), blocking=False)
             return True
 
     def _pause_program(self) -> bool:
