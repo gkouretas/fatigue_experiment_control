@@ -46,7 +46,7 @@ _RHS_JOINT_ANGLES = np.radians([
     -90.10,
     267.40
 ]).tolist()
-_USE_TOOL = False
+_USE_TOOL = True
 _NUM_REPETITIONS = 11
 
 class ExperimentControlGui(URControlQtWindow):
@@ -73,6 +73,7 @@ class ExperimentControlGui(URControlQtWindow):
             engagement_debounce=0.5,
             state_change_callback=self._refresh_ui,
             experiment_feedback_callback=self.exercise_feedback,
+            experiment_completion_callback=self._rviz_manager.exercise_completion_callback,
             watchdog_input_device_change_callback=partial(self._update_watchdog, self._input_device_watchdog),
             watchdog_tool_change_callback=partial(self._update_watchdog, self._tool_watchdog))
         
@@ -125,6 +126,8 @@ class ExperimentControlGui(URControlQtWindow):
             QPushButton("SAVE EXERCISE", self): self.__save_exercise
         }
 
+        self._last_state = RobotControlStatus.UNINITIALIZED
+
         exercise_tab_layout = QVBoxLayout()
         self._exercise_tab_label = QLabel(f"State: {RobotControlStatus.UNINITIALIZED.name}")
         
@@ -150,11 +153,13 @@ class ExperimentControlGui(URControlQtWindow):
     def _refresh_ui(self, state: RobotControlStatus):
         if not _USE_ROBOT:
             return
+        self._exercise_tab_label.setText(f"State: {state.name}")
 
-        if state == RobotControlStatus.PAUSED:
+        if self._last_state == RobotControlStatus.ACTIVE and state != RobotControlStatus.PAUSED:
             self._log_manager.cycle_logging()
 
-        self._exercise_tab_label.setText(f"State: {state.name}")
+        self._last_state = state
+        
         # TODO(george): enable specific buttons based upon current state
         # for button in self._buttons.keys():
         #     match state:

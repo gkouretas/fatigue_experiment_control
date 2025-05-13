@@ -5,7 +5,7 @@ import transforms3d
 from rclpy.node import Node
 
 from geometry_msgs.msg import Pose, PoseStamped, Quaternion
-from geometry_msgs.msg import Transform, TransformStamped, Vector3, Point, Wrench, Twist
+from geometry_msgs.msg import Transform, TransformStamped, Vector3, Point, PoseArray
 from geometry_msgs.msg import PoseStamped
 from builtin_interfaces.msg import Duration
 from nav_msgs.msg import Path
@@ -15,8 +15,6 @@ from std_msgs.msg import Header
 from std_msgs.msg import ColorRGBA
 
 from fatigue_experiment_control.exercise_manager import Exercise
-
-from PyQt5.QtCore import Qt, QMetaObject
 
 def pose_to_ndarray(pose: Pose):
     rotmat = transforms3d.quaternions.quat2mat([
@@ -56,6 +54,7 @@ class RvizManager:
         self._align_with_path = align_with_path
 
         # self._target_pose_publisher = self._node.create_publisher(PoseStamped, "dynamic_force_target_pose", 0)
+        self._dynamic_force_poses = self._node.create_publisher(PoseArray, "dynamic_force_poses", 0)
         self._target_pose_publisher = self._node.create_publisher(Marker, "dynamic_force_target_pose_marker", 0)
         self._path_publisher = self._node.create_publisher(Path, "dynamic_force_path", 0)
         self._error_vector_publisher = self._node.create_publisher(Marker, "dynamic_force_error_vector", 0)
@@ -159,6 +158,9 @@ class RvizManager:
                 )
             )
 
+    def exercise_completion_callback(self):
+        self._completed_reps += 0.5
+
     from ur_msgs.action._dynamic_force_mode_path import DynamicForceModePath_FeedbackMessage
     def exercise_feedback(self, feedback: DynamicForceModePath_FeedbackMessage):
         if self._move_camera_with_exercise:
@@ -256,20 +258,14 @@ class RvizManager:
         self._error_vector_publisher.publish(error_vector)
         # self._progress_widget.setValue(int(feedback.feedback.progress_percentage * 100))
 
-        if feedback.feedback.progress_percentage == 1.0:
-            self._completed_reps += 1
-        elif self._completed_reps == self._num_repetitions:
-            # Reset the number of completed repetitions
-            self._completed_reps = 0
-
         self._progress_text_publisher.publish(
             Marker(
                 header=Header(frame_id='wrist_3_link'),
                 lifetime=Duration(sec=1),
                 type=Marker.TEXT_VIEW_FACING,
-                pose=Pose(position=Point(z=-0.25)),
+                pose=Pose(position=Point(z=+1.0)),
                 scale=Vector3(x=0.1, y=0.0, z=0.1),
-                text=f"Progress [{'active' if not feedback.feedback.is_paused else 'paused'}]: {(feedback.feedback.progress_percentage * 100):.2f}% [rep: {int(self._completed_reps//2)}/{self._num_repetitions}]", # divide number of reps by 2, since assumed to be half-reps
+                text=f"Progress [{'active' if not feedback.feedback.is_paused else 'paused'}]: {(feedback.feedback.progress_percentage * 100):.2f}% [rep: {self._completed_reps:.1f}/{self._num_repetitions}]", # divide number of reps by 2, since assumed to be half-reps
                 color=ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)
             )
         )
@@ -283,7 +279,7 @@ class RvizManager:
                 header=Header(frame_id='wrist_3_link'),
                 lifetime=Duration(sec=1),
                 type=Marker.TEXT_VIEW_FACING,
-                pose=Pose(position=Point(z=-0.25)),
+                pose=Pose(position=Point(z=+1.0)),
                 scale=Vector3(x=0.0, y=0.0, z=0.1),
                 text="Paused",
                 color=ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)
@@ -292,3 +288,4 @@ class RvizManager:
 
     def visualize_exercise(self, exercise: Exercise):
         self._path_publisher.publish(Path(header=Header(frame_id="base"), poses=exercise.poses))
+        self._dynamic_force_poses.publish(PoseArray(header=Header(frame_id="base"), poses=[x.pose for x in exercise.poses]))

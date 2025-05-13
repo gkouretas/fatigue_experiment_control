@@ -74,6 +74,7 @@ class RobotControlArbiter:
                  state_change_callback: Callable[[RobotControlStatus], None] = None,
                  deploy_feedback_callback: Callable[[FollowJointTrajectory.Feedback], None] = None,
                  experiment_feedback_callback: Callable[[DynamicForceModePath.Feedback], None] = None,
+                 experiment_completion_callback: Callable[[None], None] = None,
                  watchdog_input_device_change_callback: Callable[[bool], None] = None,
                  watchdog_tool_change_callback: Callable[[bool], None] = None):
         """
@@ -99,6 +100,7 @@ class RobotControlArbiter:
         self._state_change_callback = state_change_callback
         self._deploy_feedback_callback = deploy_feedback_callback
         self._experiment_feedback_callback = experiment_feedback_callback
+        self._experiment_completion_callback = experiment_completion_callback
         self._watchdog_input_device_change_callback = watchdog_input_device_change_callback
         self._watchdog_tool_change_callback = watchdog_tool_change_callback
 
@@ -497,9 +499,11 @@ class RobotControlArbiter:
 
     def _exercise_completion(self, *args):
         with self._robot_mutex:
+            if callback := self._experiment_completion_callback:
+                self._experiment_completion_callback()
             if len(self._goal_queue) > 0:
                 # Still repetitions to complete
-                goal = self._goal_queue.pop()
+                goal = self._goal_queue.popleft()
 
                 # TODO: will this work here, or do we need to wait for the goal to formally complete?
                 # Will find out on system, no way to test in ursim easily...
@@ -549,14 +553,21 @@ class RobotControlArbiter:
             )
 
             # TODO: support for both half rep and full rep recordings
+            # TODO(george): right now we have to skip a few poses for follow up repetitions b/c of close proximity
+            # from finish. Would be nice to simply re-interpolate the poses, but this works fine for now so oh well...
             goal_reversed = copy.deepcopy(goal)
-            goal_reversed.force_mode_path=Path(poses=exercise.poses[::-1]) # reverse the order of the poses
+            goal_reversed.task_frame = exercise.poses[-1]
+            goal_reversed.force_mode_path=Path(poses=exercise.poses[::-1][2:]) # reverse the order of the poses
             
-            for _ in range(self._num_repetitions):
-                self._goal_queue.append(goal)
-                self._goal_queue.append(goal_reversed)
+            for i in range(self._num_repetitions):
+                goal_forward = copy.deepcopy(goal)
+                if i != 0:
+                    goal_forward.force_mode_path = Path(poses=exercise.poses[2:])
 
-            self._robot.run_dynamic_force_mode(self._goal_queue.pop(), blocking=False)
+                self._goal_queue.append(goal_forward)
+                self._goal_queue.append(copy.deepcopy(goal_reversed))
+
+            self._robot.run_dynamic_force_mode(self._goal_queue.popleft(), blocking=False)
             return True
 
     def _pause_program(self) -> bool:
