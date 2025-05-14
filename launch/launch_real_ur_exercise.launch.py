@@ -1,0 +1,49 @@
+from launch import LaunchDescription
+from launch.actions import IncludeLaunchDescription
+
+from launch_ros.substitutions import FindPackageShare
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+
+from launch_ros.actions import Node
+
+_hard_coded_args = {
+    "ur_type": "ur10e",
+    "robot_ip": "192.168.1.102",
+    "launch_simulation": "false",
+    "headless_mode": "true"
+}
+
+def generate_launch_description():
+    ur_control_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([FindPackageShare("ur_robot_driver"), "/launch/ur_control.launch.py"]),
+        launch_arguments = _hard_coded_args.items()
+    )
+
+    qt_launch = Node(
+        package = "fatigue_experiment_control",
+        executable = "experiment_gui"
+    )
+
+    mindrove_launch = Node(
+        package="ros2_mindrove",
+        executable="pub"
+    )
+
+    plux_launch = Node(
+        package="ros2_plux_biosignals",
+        executable="pub"
+    )
+
+    classifier_launch = Node(
+        package="fatigue_classifier",
+        executable="real_classifier"
+    )
+
+    decoder_launch = Node(
+        package="exercise_decoder_node",
+        executable="force_mode_params_decoder"
+    )
+
+    return LaunchDescription(
+        [ur_control_launch, qt_launch, mindrove_launch, plux_launch, classifier_launch, decoder_launch]
+    )

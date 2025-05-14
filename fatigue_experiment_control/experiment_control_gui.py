@@ -117,6 +117,7 @@ class ExperimentControlGui(URControlQtWindow):
             QPushButton("DEPLOY ROBOT LHS", self): partial(self._robot_manager.move_to_home, _LHS_JOINT_ANGLES),
             QPushButton("DEPLOY ROBOT RHS", self): partial(self._robot_manager.move_to_home, _RHS_JOINT_ANGLES),
             QPushButton("RESET ARM", self): self._robot_manager.reset_arm_pose,
+            QPushButton("TRANSLATE END EFFECTOR", self): self.__translate_end_effector,
             QPushButton("PLAN BICEP CURL", self): partial(self.__exercise_planning, ExerciseType.VERTICAL_BICEP_CURL),
             QPushButton("PLAN LATERAL RAISE", self): partial(self.__exercise_planning, ExerciseType.VERTICAL_LATERAL_RAISE),
             QPushButton("STOP PLANNING", self): self.__stop_planning,
@@ -200,6 +201,18 @@ class ExperimentControlGui(URControlQtWindow):
         for button, callback_func in self._buttons.items():
             button.clicked.connect(callback_func)
             layout.addWidget(button)
+
+    def __translate_end_effector(self):
+        if not self._robot_manager.backdrive_robot(
+            # Freedrive the robot in the translational axes
+            SetFreedriveParams.Request(
+                type=SetFreedriveParams.Request.TYPE_STRING,
+                free_axes=[True, True, True, False, False, False],
+                feature_constant=SetFreedriveParams.Request.FEATURE_TOOL
+            )
+        ):
+            self._node.get_logger().error("Failed to enter freedrive")
+            return
 
     def __exercise_planning(self, exercise_type: ExerciseType):
         if not self._robot_manager.backdrive_robot(
