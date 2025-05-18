@@ -271,20 +271,7 @@ class RvizManager:
         )
 
     def reset(self):
-        # if not self._progress_widget.isHidden():
-        #     QMetaObject.invokeMethod(self._progress_widget, 'hide', Qt.ConnectionType.QueuedConnection)
-
-        self._progress_text_publisher.publish(
-            Marker(
-                header=Header(frame_id='wrist_3_link'),
-                lifetime=Duration(sec=1),
-                type=Marker.TEXT_VIEW_FACING,
-                pose=Pose(position=Point(z=+1.0)),
-                scale=Vector3(x=0.0, y=0.0, z=0.1),
-                text="Paused",
-                color=ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)
-            )
-        )
+        self._completed_reps = 0.0
 
     def visualize_exercise(self, exercise: Exercise):
         self._path_publisher.publish(Path(header=Header(frame_id="base"), poses=exercise.poses))

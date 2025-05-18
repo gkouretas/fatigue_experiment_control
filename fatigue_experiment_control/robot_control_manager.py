@@ -18,7 +18,7 @@ from ur_msgs.action import DynamicForceModePath
 from ur_dashboard_msgs.msg import RobotMode, SafetyMode
 from ur_msgs.srv import SetIO, SetFreedriveParams
 from ur_dashboard_msgs.action import SetMode
-from ur10e_custom_control.ur10e_typedefs import URService
+from ur10e_custom_control.ur10e_typedefs import URService, URControlModes
 from ur10e_custom_control.ur10e_configs import UR_QOS_PROFILE
 from control_msgs.action import FollowJointTrajectory
 from fatigue_experiment_control.exercise_manager import Exercise
@@ -263,6 +263,7 @@ class RobotControlArbiter:
             if request is not None and request.result.success:
                 pass
             else:
+                self._node.get_logger().error("Failed to start robot program")
                 self._change_state(RobotControlStatus.ERROR)
                 return False
 
@@ -277,6 +278,7 @@ class RobotControlArbiter:
                 if request is not None and request.success:
                     pass
                 else:
+                    self._node.get_logger().error("Failed to start robot program")
                     self._change_state(RobotControlStatus.ERROR)
                     return False
 
@@ -304,6 +306,7 @@ class RobotControlArbiter:
             if request is not None and request.success:
                 pass
             else:
+                self._node.get_logger().error("Failed to stop robot program")
                 self._change_state(RobotControlStatus.ERROR)
                 return False
 
@@ -319,6 +322,7 @@ class RobotControlArbiter:
             if request is not None and request.success:
                 pass
             else:
+                self._node.get_logger().error("Failed to stop robot program")
                 self._change_state(RobotControlStatus.ERROR)
                 return False
 
@@ -360,9 +364,14 @@ class RobotControlArbiter:
             self._robot.stop_freedrive_control()
             self._change_state(RobotControlStatus.IDLE)
 
+    def set_position_as_home(self, home: list[list[float]]):
+        with self._robot_mutex:
+            self._home_pose = home
+
     def move_to_home(self, home: list[list[float]]):
-        self._home_pose = home
-        self._move_to(self._home_pose, pending_state=RobotControlStatus.IDLE)
+        with self._robot_mutex:
+            self._home_pose = home
+            self._move_to(self._home_pose, pending_state=RobotControlStatus.IDLE)
 
     def reset_arm_pose(self):
         if self._home_pose is not None:
@@ -441,6 +450,7 @@ class RobotControlArbiter:
         self._pending_trajectory_state = pending_state
         self._change_state(RobotControlStatus.TRAJECTORY)
         self._robot.set_action_completion_callback(self._handle_action)
+        self._robot.set_action_feedback_callback(None)
         self._robot.set_action_result_callback(self._robot_control_completion)
 
         self._robot.send_trajectory(
@@ -497,10 +507,20 @@ class RobotControlArbiter:
             self._robot.stop_robot()
             self._change_state(RobotControlStatus.UNINITIALIZED)
 
+    def _reset_experiment(self):
+        # Set the pending exercise to None
+        self._pending_exercise = None
+
+        # Stop dynamic force control
+        self._robot.set_controllers(start=[], stop=[URControlModes.DYNAMIC_FORCE_MODE])
+
+        # Change state to IDLE
+        self._change_state(RobotControlStatus.IDLE)
+
     def _exercise_completion(self, *args):
         with self._robot_mutex:
             if callback := self._experiment_completion_callback:
-                self._experiment_completion_callback()
+                callback()
             if len(self._goal_queue) > 0:
                 # Still repetitions to complete
                 goal = self._goal_queue.popleft()
@@ -509,9 +529,7 @@ class RobotControlArbiter:
                 # Will find out on system, no way to test in ursim easily...
                 self._robot.run_dynamic_force_mode(goal, blocking=False)
             else:
-                # TODO: a similar reset should happen from any transition out of active state
-                self._pending_exercise = None
-                self._change_state(RobotControlStatus.IDLE)
+                self._reset_experiment()
 
     def _start_experiment(self, exercise: Exercise) -> bool:
         with self._robot_mutex:
@@ -579,12 +597,17 @@ class RobotControlArbiter:
             else:
                 srv = URService.DashboardClient.SRV_PAUSE
                 req = None # Use default
+
             if result := self._robot.call_service(srv, req):
                 status = result.success
                 if status:
                     self._change_state(RobotControlStatus.PAUSED)
                 else:
+                    self._node.get_logger().error(f"Failed to paused program [{result}]")
                     self._change_state(RobotControlStatus.ERROR)
+            else:
+                self._node.get_logger().error(f"Failed to run pause service")
+                self._change_state(RobotControlStatus.ERROR)
 
             return status
 
@@ -649,14 +672,15 @@ class RobotControlArbiter:
                         if self._start_experiment(self._pending_exercise):
                             self._change_state(state=RobotControlStatus.ACTIVE)
                         else:
+                            self._node.get_logger().error(f"Failed to start experiment")
                             self._change_state(state=RobotControlStatus.ERROR)
                 case RobotControlStatus.ACTIVE:
-                    if not self.is_ready or not self.tool_engaged:
-                        # If we are not ready, pause the experiment
-                        if self._pause_experiment():
-                            self._change_state(state=RobotControlStatus.PAUSED)
-                        else:
-                            self._change_state(state=RobotControlStatus.ERROR)
+                    if not self.is_ready:
+                        # If the "stop" button is pressed, reset the experiment
+                        self._reset_experiment()
+                    if not self.tool_engaged:
+                        # Pause the experiment if the tool is disengaged
+                        self._pause_experiment()
                 case RobotControlStatus.PAUSED:
                     match self._previous_state:
                         case RobotControlStatus.ACTIVE:
@@ -670,6 +694,7 @@ class RobotControlArbiter:
                         if self._play_program():
                             self._change_state(state=self._previous_state)
                         else:
+                            self._node.get_logger().error("Failed to play program")
                             self._change_state(state=RobotControlStatus.ERROR)
                 case _:
                     pass

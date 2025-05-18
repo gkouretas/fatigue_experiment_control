@@ -65,12 +65,21 @@ class ExerciseManager:
             qos_profile=UR_QOS_PROFILE
         )
 
+        self._last_joint_state: list[list[float]]
+
         self._target_pose_publisher = self._node.create_publisher(PoseStamped, "dynamic_force_target_pose", 0)
         self._path_publisher = self._node.create_publisher(Path, "dynamic_force_path", 0)
         self._error_vector_publisher = self._node.create_publisher(Marker, "dynamic_force_error_vector", 0)
         self._rviz_camera_tform_publisher = TransformBroadcaster(self._node, 0)
 
         self._lock = threading.Lock()
+
+    def get_last_joint_state(self) -> list[list[float]] | None:
+        with self._lock: return self._last_joint_state
+
+    def is_monitoring(self) -> bool:
+        with self._lock:
+            return self._monitor_request
 
     def get_exercise(self, decimated: bool = True) -> Exercise | None:
         if self._active_exercise is None or self._monitor_request: 
@@ -142,6 +151,7 @@ class ExerciseManager:
 
     def add_joint_state(self, joints: JointState):
         with self._lock:
+            self._last_joint_state = joints.position
             if self._active_exercise is not None and self._monitor_request:
                 self._joint_counter += 1
                 if self._joint_counter % self._joint_decimation == 0:

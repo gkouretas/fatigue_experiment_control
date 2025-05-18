@@ -154,9 +154,11 @@ class ExperimentControlGui(URControlQtWindow):
     def _refresh_ui(self, state: RobotControlStatus):
         if not _USE_ROBOT:
             return
+        
         self._exercise_tab_label.setText(f"State: {state.name}")
 
         if self._last_state == RobotControlStatus.ACTIVE and state != RobotControlStatus.PAUSED:
+            self._rviz_manager.reset()
             self._log_manager.cycle_logging()
 
         self._last_state = state
@@ -228,7 +230,11 @@ class ExperimentControlGui(URControlQtWindow):
         self._exercise_manager.start_monitoring(name=postfix_string_with_current_time(exercise_type.name))
 
     def __stop_planning(self):
-        self._exercise_manager.stop_monitoring()
+        if self._exercise_manager.is_monitoring():
+            self._exercise_manager.stop_monitoring()
+        else:
+            if current_position := self._exercise_manager.get_last_joint_state():
+                self._robot_manager.set_position_as_home(current_position)
         self._robot_manager.exit_planning()
 
     def __preview_exercise(self):

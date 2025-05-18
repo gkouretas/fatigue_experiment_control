@@ -44,6 +44,9 @@ def generate_launch_description():
         executable="force_mode_params_decoder"
     )
 
+    # return LaunchDescription(
+    #     [ur_control_launch, qt_launch, mindrove_launch, plux_launch, classifier_launch, decoder_launch]
+    # )
     return LaunchDescription(
-        [ur_control_launch, qt_launch, mindrove_launch, plux_launch, classifier_launch, decoder_launch]
+        [ur_control_launch, qt_launch, mindrove_launch, classifier_launch, decoder_launch]
     )
