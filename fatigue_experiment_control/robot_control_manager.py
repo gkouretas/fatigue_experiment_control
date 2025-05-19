@@ -16,7 +16,7 @@ from pi_user_input_node.user_input_node_config import USER_INPUT_QOS_PROFILE, US
 from ur10e_custom_control.ur_robot_sm import URRobotSM
 from ur_msgs.action import DynamicForceModePath
 from ur_dashboard_msgs.msg import RobotMode, SafetyMode
-from ur_msgs.srv import SetIO, SetFreedriveParams
+from ur_msgs.srv import SetIO, SetFreedriveParams, SetPayload, SetTCPOffset
 from ur_dashboard_msgs.action import SetMode
 from ur10e_custom_control.ur10e_typedefs import URService, URControlModes
 from ur10e_custom_control.ur10e_configs import UR_QOS_PROFILE
@@ -24,7 +24,7 @@ from control_msgs.action import FollowJointTrajectory
 from fatigue_experiment_control.exercise_manager import Exercise
 from fatigue_experiment_control.fatigue_experiment_control_configs import *
 from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import Wrench, Twist, Vector3
+from geometry_msgs.msg import Vector3, Pose, Point, Quaternion, Wrench, Twist
 from nav_msgs.msg import Path
 
 from dataclasses import dataclass, field
@@ -35,6 +35,7 @@ _ANALOG_ACTIVE_THRESHOLD = 2.5
 _SPEED_LIMITS = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
 _CARTESIAN_DEVIATION_LIMIT = 1.0
 _ANGULAR_DEVIATION_LIMIT = 1.0
+_ANGULAR_TOLERANCE_LIMIT = 0.1
 _DEFAULT_TRAJECTORY_DURATION = 10
 
 @dataclass
@@ -74,7 +75,8 @@ class RobotControlArbiter:
                  state_change_callback: Callable[[RobotControlStatus], None] = None,
                  deploy_feedback_callback: Callable[[FollowJointTrajectory.Feedback], None] = None,
                  experiment_feedback_callback: Callable[[DynamicForceModePath.Feedback], None] = None,
-                 experiment_completion_callback: Callable[[None], None] = None,
+                 experiment_repetition_completion_callback: Callable[[None], None] = None,
+                 experiment_set_completion_callback: Callable[[None], None] = None,
                  watchdog_input_device_change_callback: Callable[[bool], None] = None,
                  watchdog_tool_change_callback: Callable[[bool], None] = None):
         """
@@ -100,7 +102,8 @@ class RobotControlArbiter:
         self._state_change_callback = state_change_callback
         self._deploy_feedback_callback = deploy_feedback_callback
         self._experiment_feedback_callback = experiment_feedback_callback
-        self._experiment_completion_callback = experiment_completion_callback
+        self._experiment_repetition_completion_callback = experiment_repetition_completion_callback
+        self._experiment_set_completion_callback = experiment_set_completion_callback
         self._watchdog_input_device_change_callback = watchdog_input_device_change_callback
         self._watchdog_tool_change_callback = watchdog_tool_change_callback
 
@@ -279,6 +282,39 @@ class RobotControlArbiter:
                     pass
                 else:
                     self._node.get_logger().error("Failed to start robot program")
+                    self._change_state(RobotControlStatus.ERROR)
+                    return False
+                
+                # Set payload/CoG
+                request = self._robot.call_service(
+                    URService.IOAndStatusController.SRV_SET_PAYLOAD,
+                    request=SetPayload.Request(
+                        mass=0.7,
+                        center_of_gravity=Vector3(x=0.0,y=0.0,z=33.0/1000.0),
+                        inertia_matrix=[0.0,0.0,0.0,0.0,0.0,0.0] # TODO(george): figure out inertia matrix
+                    )
+                )
+
+                if request is not None and request.success:
+                    pass
+                else:
+                    self._node.get_logger().error("Failed to set payload")
+                    self._change_state(RobotControlStatus.ERROR)
+                    return False
+                
+                # Set TCP offset
+                request = self._robot.call_service(
+                    URService.IOAndStatusController.SRV_SET_TCP_OFFSET,
+                    request=SetTCPOffset.Request(
+                        tcp_offset=Pose(position=Point(x=0.0, y=0.0, z=161.65/1000.0),
+                                        orientation=Quaternion(x=0.0, y=0.0, z=0.0, w=1.0))
+                    )
+                )
+
+                if request is not None and request.success:
+                    pass
+                else:
+                    self._node.get_logger().error("Failed to set TCP offset")
                     self._change_state(RobotControlStatus.ERROR)
                     return False
 
@@ -508,29 +544,42 @@ class RobotControlArbiter:
             self._change_state(RobotControlStatus.UNINITIALIZED)
 
     def _reset_experiment(self):
+        self._node.get_logger().info("Resetting experiment")
+        
         # Set the pending exercise to None
         self._pending_exercise = None
 
-        # Stop dynamic force control
-        self._robot.set_controllers(start=[], stop=[URControlModes.DYNAMIC_FORCE_MODE])
+        # Clear the goal queue
+        self._goal_queue.clear()
 
         # Change state to IDLE
         self._change_state(RobotControlStatus.IDLE)
 
+        if callback := self._experiment_set_completion_callback:
+            callback()
+
+        # Stop dynamic force control
+        self._node.get_logger().info(
+            f"Resp: {self._robot.set_controllers(start=[], stop=[URControlModes.DYNAMIC_FORCE_MODE])}"
+        )
+
     def _exercise_completion(self, *args):
         with self._robot_mutex:
-            if callback := self._experiment_completion_callback:
-                callback()
-            if len(self._goal_queue) > 0:
-                # Still repetitions to complete
-                goal = self._goal_queue.popleft()
-
-                # TODO: will this work here, or do we need to wait for the goal to formally complete?
-                # Will find out on system, no way to test in ursim easily...
-                self._robot.run_dynamic_force_mode(goal, blocking=False)
+            if self._state == RobotControlStatus.IDLE:
+                self._goal_queue.clear()
             else:
-                self._reset_experiment()
+                if len(self._goal_queue) > 0:
+                    if callback := self._experiment_repetition_completion_callback:
+                        callback()
+                    # Still repetitions to complete
+                    goal = self._goal_queue.popleft()
 
+                    # TODO: will this work here, or do we need to wait for the goal to formally complete?
+                    # Will find out on system, no way to test in ursim easily...
+                    self._robot.run_dynamic_force_mode(goal, blocking=False)
+                else:
+                    self._reset_experiment()
+                    
     def _start_experiment(self, exercise: Exercise) -> bool:
         with self._robot_mutex:
             self._robot.set_action_completion_callback(self._handle_action)
@@ -564,9 +613,9 @@ class RobotControlArbiter:
                     DynamicForceModePath.Goal.ALWAYS_INACTIVE,
                     DynamicForceModePath.Goal.ALWAYS_ACTIVE,
                     DynamicForceModePath.Goal.ALWAYS_INACTIVE,
-                    _ANGULAR_DEVIATION_LIMIT,
-                    _ANGULAR_DEVIATION_LIMIT,
-                    _ANGULAR_DEVIATION_LIMIT
+                    _ANGULAR_TOLERANCE_LIMIT,
+                    _ANGULAR_TOLERANCE_LIMIT,
+                    _ANGULAR_TOLERANCE_LIMIT
                 ],        
             )
 
@@ -678,12 +727,15 @@ class RobotControlArbiter:
                     if not self.is_ready:
                         # If the "stop" button is pressed, reset the experiment
                         self._reset_experiment()
-                    if not self.tool_engaged:
+                    elif not self.tool_engaged:
                         # Pause the experiment if the tool is disengaged
                         self._pause_experiment()
                 case RobotControlStatus.PAUSED:
                     match self._previous_state:
                         case RobotControlStatus.ACTIVE:
+                            if not self.is_ready:
+                                # If the "stop" button is pressed, reset the experiment
+                                self._reset_experiment()
                             cond = self.is_ready and self.tool_engaged
                         case RobotControlStatus.TRAJECTORY:
                             cond = not self.tool_engaged

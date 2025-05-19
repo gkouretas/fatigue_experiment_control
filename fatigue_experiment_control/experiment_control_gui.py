@@ -5,6 +5,7 @@ import rclpy
 
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import ReentrantCallbackGroup
 
 from ur10e_custom_control.ur_control_qt import URControlQtWindow
 from fatigue_experiment_control.robot_control_manager import RobotControlArbiter, RobotControlStatus
@@ -12,9 +13,11 @@ from fatigue_experiment_control.exercise_manager import ExerciseManager, Exercis
 from fatigue_experiment_control.rviz_manager import RvizManager
 from ros2_mindrove.mindrove_configs import MINDROVE_ROS_TOPIC_NAME
 from ros2_plux_biosignals.plux_configs import PLUX_ROS_TOPIC_NAME
+from pi_user_input_node.user_input_node_config import USER_INPUT_TOPIC_NAME
 from idl_definitions.msg import (
     MindroveArmBandEightChannelMsg,
-    PluxMsg
+    PluxMsg,
+    UserInputMsg
 )
 
 from python_utils.ros2_utils.visualization.qt_integration import RclpySpinner
@@ -29,7 +32,6 @@ from PyQt5.QtWidgets import *
 from functools import partial
 
 _DISTANCE_THRESHOLD = 30/1000
-_USE_ROBOT = True
 _LHS_JOINT_ANGLES = np.radians([
     -58.93,
     118.38,
@@ -48,6 +50,116 @@ _RHS_JOINT_ANGLES = np.radians([
 ]).tolist()
 _USE_TOOL = True
 _NUM_REPETITIONS = 11
+
+class ManualExperimentControlGui(QMainWindow):
+    def __init__(self, node: Node):
+        super().__init__()
+
+        self._node = node
+
+        self._input_device_watchdog = QLabel(text="Input device: inactive")
+        self._mindrove_watchdog = QLabel(text="Mindrove: inactive")
+        self._plux_watchdog = QLabel(text="Plux: inactive")
+
+        self._mindrove_sub = self._node.create_subscription(
+            msg_type=MindroveArmBandEightChannelMsg,
+            topic=MINDROVE_ROS_TOPIC_NAME,
+            callback=partial(self._update_watchdog, self._mindrove_watchdog),
+            qos_profile=get_realtime_qos_profile(),
+            callback_group=ReentrantCallbackGroup()
+        )
+
+        self._plux_sub = self._node.create_subscription(
+            msg_type=PluxMsg,
+            topic=PLUX_ROS_TOPIC_NAME,
+            callback=partial(self._update_watchdog, self._plux_watchdog),
+            qos_profile=get_realtime_qos_profile(),
+            callback_group=ReentrantCallbackGroup()
+        )
+
+        self._input_device_sub = self._node.create_subscription(
+            msg_type=UserInputMsg,
+            topic=USER_INPUT_TOPIC_NAME,
+            callback=partial(self._update_watchdog, self._input_device_watchdog),
+            qos_profile=get_realtime_qos_profile(),
+            callback_group=ReentrantCallbackGroup()
+        )
+
+        self._mindrove_watchdog_timer = self._node.create_timer(
+            1.0,
+            callback=partial(self._update_watchdog, self._mindrove_watchdog, False),
+            callback_group=ReentrantCallbackGroup()
+        )
+
+        self._plux_watchdog_timer = self._node.create_timer(
+            1.0,
+            callback=partial(self._update_watchdog, self._plux_watchdog, False),
+            callback_group=ReentrantCallbackGroup()
+        )
+
+        self._input_device_watchdog_timer = self._node.create_timer(
+            1.0,
+            callback=partial(self._update_watchdog, self._input_device_watchdog, False),
+            callback_group=ReentrantCallbackGroup()
+        )
+
+        self._logger_timer = self._node.create_timer(
+            0.1,
+            callback=self._check_statuses,
+            callback_group=ReentrantCallbackGroup()
+        )
+
+        self._log_manager = RosbagManager(
+            node=self._node
+        )
+
+        exercise_tab_layout = QVBoxLayout()
+
+        labels = (
+            self._input_device_watchdog,
+            self._mindrove_watchdog,
+            self._plux_watchdog
+        )
+        
+        for label in labels:
+            exercise_tab_layout.addWidget(label)
+
+        self._status = [False, False, False]
+
+        widget = QWidget()
+        widget.setLayout(exercise_tab_layout)
+
+        self.setCentralWidget(widget)
+
+    def _update_watchdog(self, label: QLabel, status: bool | PluxMsg | MindroveArmBandEightChannelMsg | UserInputMsg):
+        if "Input" in label.text(): 
+            label.setText(f"Input device: {'active' if status else 'inactive'}")
+            self._status[0] = status
+            if status:
+                # Reset watchdog timer, since it is under our control
+                self._input_device_watchdog_timer.reset()
+        elif "Mindrove" in label.text(): 
+            label.setText(f"Mindrove: {'active' if status else 'inactive'}")
+            if status:
+                # Reset watchdog timer, since it is under our control
+                self._mindrove_watchdog_timer.reset()
+            self._status[1] = status
+        elif "Plux" in label.text(): 
+            label.setText(f"Plux: {'active' if status else 'inactive'}")
+            if status:
+                # Reset watchdog timer, since it is under our control
+                self._plux_watchdog_timer.reset()
+            self._status[2] = status
+
+    def _check_statuses(self):
+        if all(self._status):
+            self._node.get_logger().info("All items are active, starting logging")
+            if not self._log_manager.cycle_logging(name="manual_exercise"):
+                self._node.get_logger().info("Failed to start logging")
+                return
+            
+            # Cancel this timer once logging begins
+            self._logger_timer.cancel()
 
 class ExperimentControlGui(URControlQtWindow):
     def __init__(self, node):
@@ -72,8 +184,9 @@ class ExperimentControlGui(URControlQtWindow):
             num_repetitions=_NUM_REPETITIONS,
             engagement_debounce=0.5,
             state_change_callback=self._refresh_ui,
-            experiment_feedback_callback=self.exercise_feedback,
-            experiment_completion_callback=self._rviz_manager.exercise_completion_callback,
+            experiment_feedback_callback=self._rviz_manager.exercise_feedback,
+            experiment_repetition_completion_callback=self._rviz_manager.exercise_completion_callback,
+            experiment_set_completion_callback=self._rviz_manager.reset,
             watchdog_input_device_change_callback=partial(self._update_watchdog, self._input_device_watchdog),
             watchdog_tool_change_callback=partial(self._update_watchdog, self._tool_watchdog))
         
@@ -110,6 +223,20 @@ class ExperimentControlGui(URControlQtWindow):
             node=self._node
         )
 
+        exercise_tab_layout = QVBoxLayout()
+
+        self._exercise_tab_label = QLabel(f"State: {RobotControlStatus.UNINITIALIZED.name}")
+        labels = (
+            self._exercise_tab_label,
+            self._tool_watchdog,
+            self._input_device_watchdog,
+            self._mindrove_watchdog,
+            self._plux_watchdog
+        )
+        
+        for label in labels:
+            exercise_tab_layout.addWidget(label)
+        
         self._buttons = {
             QPushButton("INITIALIZE ROBOT", self): self._robot_manager.start_robot_program,
             QPushButton("STOP ROBOT", self): self._robot_manager.stop_experiment_override,
@@ -129,37 +256,14 @@ class ExperimentControlGui(URControlQtWindow):
 
         self._last_state = RobotControlStatus.UNINITIALIZED
 
-        exercise_tab_layout = QVBoxLayout()
-        self._exercise_tab_label = QLabel(f"State: {RobotControlStatus.UNINITIALIZED.name}")
-        
-        for label in (
-            self._exercise_tab_label,
-            self._tool_watchdog,
-            self._input_device_watchdog,
-            self._mindrove_watchdog,
-            self._plux_watchdog,
-        ):
-            exercise_tab_layout.addWidget(label)
-        
         self._create_tab(name="Exercise Tab", layout=exercise_tab_layout, tab_create_func=self._exercise_tab_constructor)
 
     @property
     def sensor_watchdog(self):
         return 'inactive' in self._plux_watchdog.text() or 'inactive' in self._mindrove_watchdog.text()
-
-    from ur_msgs.action._dynamic_force_mode_path import DynamicForceModePath_FeedbackMessage
-    def exercise_feedback(self, feedback: DynamicForceModePath_FeedbackMessage):        
-        self._rviz_manager.exercise_feedback(feedback)
-
-    def _refresh_ui(self, state: RobotControlStatus):
-        if not _USE_ROBOT:
-            return
         
+    def _refresh_ui(self, state: RobotControlStatus):
         self._exercise_tab_label.setText(f"State: {state.name}")
-
-        if self._last_state == RobotControlStatus.ACTIVE and state != RobotControlStatus.PAUSED:
-            self._rviz_manager.reset()
-            self._log_manager.cycle_logging()
 
         self._last_state = state
         
@@ -299,25 +403,35 @@ class ExperimentControlGui(URControlQtWindow):
         else:
             self._node.get_logger().info("No output selected or error saving exercise, file not saved")
 
-def main():
+def main(args=None):
     # Create the application
     app = QApplication(sys.argv)
 
-    rclpy.init()
+    rclpy.init(args=args)
 
     node = Node("exercise_primary_node")
-    
-    # Create the main window
-    main_window = ExperimentControlGui(node)
-    main_window.show()
+    if node.declare_parameter('manual', False).value:
+        # Create the main window
+        main_window = ManualExperimentControlGui(node)
+        main_window.show()
 
-    executor = MultiThreadedExecutor()
-    executor.add_node(node)
-    executor.add_node(main_window._robot._node)
-    executor.add_node(main_window._robot._service_node)
+        executor = MultiThreadedExecutor()
+        executor.add_node(node)
 
-    rclpy_spinner = RclpySpinner([node, main_window._robot._node, main_window._robot._service_node])
-    rclpy_spinner.start()
+        rclpy_spinner = RclpySpinner([node])
+        rclpy_spinner.start()
+    else:
+        # Create the main window
+        main_window = ExperimentControlGui(node)
+        main_window.show()
+
+        executor = MultiThreadedExecutor()
+        executor.add_node(node)
+        executor.add_node(main_window._robot._node)
+        executor.add_node(main_window._robot._service_node)
+
+        rclpy_spinner = RclpySpinner([node, main_window._robot._node, main_window._robot._service_node])
+        rclpy_spinner.start()
     
     # Run the application's event loop
     app.exec_()

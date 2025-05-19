@@ -15,7 +15,6 @@ from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
 from visualization_msgs.msg import Marker
 from tf2_ros import TransformBroadcaster
-from std_msgs.msg import Header
 from typing import Callable
 
 @dataclass

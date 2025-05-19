@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
+from launch.substitutions import LaunchConfiguration
 
 from launch_ros.substitutions import FindPackageShare
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -8,7 +9,7 @@ from launch_ros.actions import Node
 
 _hard_coded_args = {
     "ur_type": "ur10e",
-    "robot_ip": "192.168.57.101",
+    "robot_ip": "192.168.56.101",
     "launch_simulation": "true",
     "simulation_version": "latest",
     "headless_mode": "true"
@@ -16,8 +17,9 @@ _hard_coded_args = {
 
 def generate_launch_description():
     qt_launch = Node(
-        package = "fatigue_experiment_control",
-        executable = "experiment_gui"
+        package="fatigue_experiment_control",
+        executable="experiment_gui",
+        ros_arguments=[{"manual": False}]
     )
 
     ur_control_launch = IncludeLaunchDescription(
@@ -26,5 +28,5 @@ def generate_launch_description():
     )
 
     return LaunchDescription(
-        [qt_launch, ur_control_launch]
+        [ur_control_launch, qt_launch]
     )
