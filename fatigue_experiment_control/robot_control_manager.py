@@ -289,9 +289,9 @@ class RobotControlArbiter:
                 request = self._robot.call_service(
                     URService.IOAndStatusController.SRV_SET_PAYLOAD,
                     request=SetPayload.Request(
-                        mass=0.7,
-                        center_of_gravity=Vector3(x=0.0,y=0.0,z=33.0/1000.0),
-                        inertia_matrix=[0.0,0.0,0.0,0.0,0.0,0.0] # TODO(george): figure out inertia matrix
+                        mass=0.810,
+                        center_of_gravity=Vector3(x=0.0,y=0.0,z=42.0/1000.0),
+                        inertia_matrix=[0.001083,0.001083,0.001083,0.0,0.0,0.0]
                     )
                 )
 

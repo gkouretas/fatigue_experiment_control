@@ -49,6 +49,7 @@ def generate_launch_description():
     # return LaunchDescription(
     #     [ur_control_launch, qt_launch, mindrove_launch, plux_launch, classifier_launch, decoder_launch]
     # )
+    # Remove plux b/c bluetooth isn't working on the system
     return LaunchDescription(
         [ur_control_launch, qt_launch, mindrove_launch, classifier_launch, decoder_launch]
     )

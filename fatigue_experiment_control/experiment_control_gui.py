@@ -152,7 +152,8 @@ class ManualExperimentControlGui(QMainWindow):
             self._status[2] = status
 
     def _check_statuses(self):
-        if all(self._status):
+        # if all(self._status):
+        if all(self._status[:-1]): # HACK(george): ignore plux for now...
             self._node.get_logger().info("All items are active, starting logging")
             if not self._log_manager.cycle_logging(name="manual_exercise"):
                 self._node.get_logger().info("Failed to start logging")

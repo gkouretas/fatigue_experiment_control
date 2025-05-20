@@ -24,14 +24,7 @@ def generate_launch_description():
         executable="pub"
     )
 
-    classifier_launch = Node(
-        package="fatigue_classifier",
-        executable="real_classifier"
-    )
-
-    # return LaunchDescription(
-    #     [qt_launch, mindrove_launch, plux_launch, classifier_launch]
-    # )
+    # Remove plux b/c bluetooth isn't working on the system
     return LaunchDescription(
-        [qt_launch, mindrove_launch, classifier_launch]
+        [qt_launch, mindrove_launch]
     )
