@@ -19,7 +19,7 @@ def generate_launch_description():
     qt_launch = Node(
         package="fatigue_experiment_control",
         executable="experiment_gui",
-        ros_arguments=[{"manual": False}]
+        parameters=[{"manual": False}]
     )
 
     ur_control_launch = IncludeLaunchDescription(
