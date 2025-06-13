@@ -12,9 +12,6 @@ from builtin_interfaces.msg import Duration
 from ur10e_custom_control.ur10e_configs import UR_QOS_PROFILE
 
 from geometry_msgs.msg import PoseStamped
-from nav_msgs.msg import Path
-from visualization_msgs.msg import Marker
-from tf2_ros import TransformBroadcaster
 from typing import Callable
 
 @dataclass
@@ -66,11 +63,6 @@ class ExerciseManager:
 
         self._last_joint_state: list[list[float]]
 
-        self._target_pose_publisher = self._node.create_publisher(PoseStamped, "dynamic_force_target_pose", 0)
-        self._path_publisher = self._node.create_publisher(Path, "dynamic_force_path", 0)
-        self._error_vector_publisher = self._node.create_publisher(Marker, "dynamic_force_error_vector", 0)
-        self._rviz_camera_tform_publisher = TransformBroadcaster(self._node, 0)
-
         self._lock = threading.Lock()
 
     def get_last_joint_state(self) -> list[list[float]] | None:
@@ -104,7 +96,7 @@ class ExerciseManager:
 
         return True
 
-    def load_exercise(self, path: os.PathLike):
+    def load_exercise(self, path: os.PathLike) -> bool:
         try:
             with open(path, "rb") as fp:
                 self._active_exercise = Exercise(**pickle.load(fp))

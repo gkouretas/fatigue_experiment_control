@@ -55,6 +55,8 @@ class ManualExperimentControlGui(QMainWindow):
     def __init__(self, node: Node):
         super().__init__()
 
+        self.setWindowTitle("Manual Control Node")
+
         self._node = node
 
         self._input_device_watchdog = QLabel(text="Input device: inactive")
@@ -81,6 +83,15 @@ class ManualExperimentControlGui(QMainWindow):
             msg_type=UserInputMsg,
             topic=USER_INPUT_TOPIC_NAME,
             callback=partial(self._update_watchdog, self._input_device_watchdog),
+            qos_profile=get_realtime_qos_profile(),
+            callback_group=ReentrantCallbackGroup()
+        )
+
+        # HACK: republish input message to ensure it gets logged
+        # remove when improved rosbag manager is integrated...
+        self._input_device_pub = self._node.create_publisher(
+            msg_type=UserInputMsg,
+            topic=USER_INPUT_TOPIC_NAME + 'repub',
             qos_profile=get_realtime_qos_profile(),
             callback_group=ReentrantCallbackGroup()
         )
@@ -136,6 +147,7 @@ class ManualExperimentControlGui(QMainWindow):
             label.setText(f"Input device: {'active' if status else 'inactive'}")
             self._status[0] = status
             if status:
+                self._input_device_pub.publish(status)
                 # Reset watchdog timer, since it is under our control
                 self._input_device_watchdog_timer.reset()
         elif "Mindrove" in label.text(): 
@@ -259,34 +271,12 @@ class ExperimentControlGui(URControlQtWindow):
 
         self._create_tab(name="Exercise Tab", layout=exercise_tab_layout, tab_create_func=self._exercise_tab_constructor)
 
-    @property
-    def sensor_watchdog(self):
-        return 'inactive' in self._plux_watchdog.text() or 'inactive' in self._mindrove_watchdog.text()
-        
     def _refresh_ui(self, state: RobotControlStatus):
         self._exercise_tab_label.setText(f"State: {state.name}")
 
         self._last_state = state
         
         # TODO(george): enable specific buttons based upon current state
-        # for button in self._buttons.keys():
-        #     match state:
-        #         case RobotControlStatus.UNINITIALIZED:
-        #             if button.text() == "INITIALIZE ROBOT": button.setEnabled(True)
-        #             else: button.setEnabled(False)
-        #         case RobotControlStatus.INITIALIZED:
-        #             if "DEPLOY ROBOT" in button.text() or button.text() == "STOP ROBOT": button.setEnabled(True)
-        #             else: button.setEnabled(False)
-        #         case RobotControlStatus.DEPLOYING:
-        #             button.setEnabled(False)
-        #         case RobotControlStatus.IDLE:
-        #             if button.text() in ("INITIALIZE ROBOT") or "DEPLOY ROBOT":
-        #                 pass
-        #         case RobotControlStatus.ACTIVE:
-        #             if not self.sensor_watchdog:
-        #                 # Stop the experiment if the sensor watchdog has been tripped
-        #                 self._robot_manager.stop_experiment_override()
-                
 
     def _update_watchdog(self, label: QLabel, status: bool | PluxMsg | MindroveArmBandEightChannelMsg):
         if "Tool" in label.text(): 
@@ -314,7 +304,7 @@ class ExperimentControlGui(URControlQtWindow):
             # Freedrive the robot in the translational axes
             SetFreedriveParams.Request(
                 type=SetFreedriveParams.Request.TYPE_STRING,
-                free_axes=[True, True, True, False, False, False],
+                free_axes=[True, True, True, True, True, True],
                 feature_constant=SetFreedriveParams.Request.FEATURE_TOOL
             )
         ):

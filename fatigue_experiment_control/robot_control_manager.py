@@ -26,6 +26,7 @@ from fatigue_experiment_control.fatigue_experiment_control_configs import *
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import Vector3, Pose, Point, Quaternion, Wrench, Twist
 from nav_msgs.msg import Path
+from python_utils.ros2_utils.comms.node_manager import get_realtime_qos_profile
 
 from dataclasses import dataclass, field
 
@@ -139,6 +140,14 @@ class RobotControlArbiter:
             qos_profile=FATIGUE_QOS_PROFILE
         )
 
+        # HACK: republish input message to ensure it gets logged
+        # remove when improved rosbag manager is integrated...
+        self._input_device_pub = self._node.create_publisher(
+            msg_type=UserInputMsg,
+            topic=USER_INPUT_TOPIC_NAME + 'repub',
+            qos_profile=get_realtime_qos_profile(),
+        )
+
         # Watchdog monitors for tool state / input device state
         self._tool_state_watchdog = self._node.create_timer(
             1.0, 
@@ -175,7 +184,7 @@ class RobotControlArbiter:
         # Cyclic monitor function
         self._cyclic_monitor_timer = self._node.create_timer(
             0.01,
-            self.monitor_experiment,
+            self._monitor_experiment,
             callback_group=MutuallyExclusiveCallbackGroup()
         )
 
@@ -616,7 +625,8 @@ class RobotControlArbiter:
                     _ANGULAR_TOLERANCE_LIMIT,
                     _ANGULAR_TOLERANCE_LIMIT,
                     _ANGULAR_TOLERANCE_LIMIT
-                ],        
+                ],
+                damping_factor=1.0
             )
 
             # TODO: support for both half rep and full rep recordings
@@ -751,7 +761,7 @@ class RobotControlArbiter:
                 case _:
                     pass
 
-    def monitor_experiment(self):
+    def _monitor_experiment(self):
         with self._robot_mutex:
             self._run_state_machine()
 
@@ -793,3 +803,6 @@ class RobotControlArbiter:
             if self._watchdog_input_device_change_callback is not None:
                 self. _watchdog_input_device_change_callback(self._input_device_state.watchdog)
             self._node.get_logger().info("Established communication with input device state")
+
+        # HACK: Re-publish the state on the local network
+        self._input_device_pub.publish(msg)
